@@ -161,6 +161,16 @@ namespace Nhom3_NoSQL.Frontend
             uname.BackColor = urole.BackColor = Theme.Bg;
             var menu = new ContextMenuStrip { BackColor = Theme.Card, ForeColor = Theme.Text, ShowImageMargin = false, Font = Theme.Sans(10) };
             menu.Items.Add(new ToolStripLabel(user?.Email ?? "") { ForeColor = Theme.Muted });
+            menu.Items.Add("Đổi mật khẩu", null, (s, e) =>
+            {
+                using (var dialog = new ChangePasswordDialog(Api))
+                    if (dialog.ShowDialog(this) == DialogResult.OK) Logout();
+            });
+            if (Api.IsAdmin)
+                menu.Items.Add("Quản lý tài khoản", null, (s, e) =>
+                {
+                    using (var dialog = new UserManagementDialog(Api)) dialog.ShowDialog(this);
+                });
             menu.Items.Add("Đăng xuất", null, (s, e) => Logout());
             foreach (var c in new Control[] { avatar, uname, urole }) { c.Cursor = Cursors.Hand; c.Click += (s, e) => menu.Show(avatar, new Point(0, 38)); }
 

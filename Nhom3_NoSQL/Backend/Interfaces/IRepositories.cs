@@ -49,7 +49,9 @@ namespace Nhom3_NoSQL.Backend.Interfaces
     public interface IUserRepository
     {
         Task<AppUser> GetByEmailAsync(string email);
+        Task<List<AppUser>> GetAllAsync();
         Task InsertAsync(AppUser user);
+        Task UpdateAsync(AppUser user);
         Task<long> CountAsync();
     }
 

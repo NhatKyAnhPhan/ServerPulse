@@ -4,12 +4,15 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Windows.Forms.DataVisualization.Charting;
+using MongoDB.Driver;
 using Nhom3_NoSQL.Backend.Api;
 using Nhom3_NoSQL.Backend.Models;
+using Nhom3_NoSQL.Backend.Services;
 using Nhom3_NoSQL.Database;
 using Nhom3_NoSQL.Frontend;
 using Nhom3_NoSQL.Frontend.Pages;
@@ -44,6 +47,8 @@ namespace Nhom3_NoSQL.Tests
             if (args.Length > 0) BaseUrl = args[0].TrimEnd('/');
             Application.ThreadException += (s, e) => UiErrors.Add(e.Exception);
             Register();
+            if (args.Contains("--p1-only")) return RunP1Only().GetAwaiter().GetResult();
+            if (args.Contains("--p2-focused")) return RunSelected(Cases.Where(c => c.Code == "TC-AUTH-11" || c.Code == "TC-NOTIFY-01" || c.Code == "TC-USER-API-01")).GetAwaiter().GetResult();
 
             // Chạy trong vòng lặp thông điệp WinForms để kiểm thử được cả giao diện
             int exit = 1;
@@ -59,6 +64,34 @@ namespace Nhom3_NoSQL.Tests
             start.Start();
             Application.Run(ctx);
             return exit;
+        }
+
+        static async Task<int> RunP1Only()
+        {
+            return await RunSelected(Cases.Where(c => c.Code.StartsWith("TC-REAL-", StringComparison.Ordinal)));
+        }
+
+        static async Task<int> RunSelected(IEnumerable<Case> selected)
+        {
+            var cases = selected.ToList();
+            foreach (var c in cases)
+            {
+                try
+                {
+                    await c.Run();
+                    c.Result = "PASS";
+                }
+                catch (Exception ex)
+                {
+                    c.Result = "FAIL";
+                    c.Detail = ex.GetType().Name + ": " + ex.Message;
+                }
+                Console.WriteLine($"{c.Result,-5} {c.Code,-16} {c.Name} {c.Detail}");
+            }
+
+            var failed = cases.Count(c => c.Result != "PASS");
+            Console.WriteLine($"Tổng: {cases.Count} | PASS: {cases.Count - failed} | FAIL: {failed}");
+            return failed == 0 ? 0 : 1;
         }
 
         static async Task<int> RunAll()
@@ -189,7 +222,33 @@ namespace Nhom3_NoSQL.Tests
         // ======================= Danh sách test case =======================
         static void Register()
         {
-            const string AUTH = "Đăng nhập / phân quyền (API)", API = "API", ALERT = "Alert (API)", UILOGIC = "Logic giao diện", UI = "Giao diện WinForms";
+            const string AUTH = "Đăng nhập / phân quyền (API)", API = "API", ALERT = "Alert (API)", UILOGIC = "Logic giao diện", UI = "Giao diện WinForms", P1 = "P1 - dữ liệu thật";
+
+            T(P1, "TC-REAL-01", "Chế độ Real chỉ tạo host hiện tại, không nạp dữ liệu demo", async () =>
+            {
+                var client = new MongoClient("mongodb://localhost:27017/?serverSelectionTimeoutMS=5000");
+                var databaseName = "ServerPulse_RealMode_Test_" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    var context = new MongoDbContext("mongodb://localhost:27017/?serverSelectionTimeoutMS=5000", databaseName);
+                    await new DemoDataSeeder(context, null).SeedAsync(false, "admin@test.local", "Test Admin", "Test-Initial-Admin-2026!");
+                    Assert(await context.Servers.CountDocumentsAsync(FilterDefinition<ServerInfo>.Empty) == 1, "chế độ Real phải chỉ tạo host máy hiện tại");
+                    Assert(await context.Metrics.CountDocumentsAsync(FilterDefinition<MetricSnapshot>.Empty) == 0, "chế độ Real đã chèn metric mẫu");
+                    Assert(await context.AlertRules.CountDocumentsAsync(FilterDefinition<AlertRule>.Empty) == 0, "chế độ Real đã chèn ngưỡng mẫu");
+                    Assert(await context.AlertEvents.CountDocumentsAsync(FilterDefinition<AlertEvent>.Empty) == 0, "chế độ Real đã chèn sự cố mẫu");
+                    Assert(await context.EventLogs.CountDocumentsAsync(FilterDefinition<Nhom3_NoSQL.Backend.Models.EventLog>.Empty) == 0, "chế độ Real đã chèn sự kiện mẫu");
+                }
+                finally { client.DropDatabase(databaseName); }
+            });
+            T(P1, "TC-REAL-02", "Collector đo đúng ổ đĩa được truyền vào", () =>
+            {
+                var drive = DriveInfo.GetDrives().FirstOrDefault(d => d.IsReady);
+                Assert(drive != null, "không tìm thấy ổ đĩa sẵn sàng để kiểm thử");
+                var expected = (double)(drive.TotalSize - drive.AvailableFreeSpace) / drive.TotalSize * 100;
+                var actual = MetricCollectorService.GetDiskUsagePercent(drive.Name);
+                Assert(Math.Abs(actual - expected) < 0.001, "tỷ lệ sử dụng không khớp ổ đĩa được chọn");
+                return Task.CompletedTask;
+            });
 
             // ---------------- Đăng nhập / phân quyền ----------------
             T(AUTH, "TC-AUTH-01", "Đăng nhập đúng tài khoản Admin trả về token + role", async () =>
@@ -222,6 +281,26 @@ namespace Nhom3_NoSQL.Tests
                 await ExpectStatus(403, () => Viewer.SaveThresholdAsync(rule));
             });
             T(AUTH, "TC-AUTH-09", "auth/me trả về thông tin phiên", async () => Assert((await Admin.GetMeAsync()).Email == DemoDataSeeder.AdminEmail, "sai email"));
+            T(AUTH, "TC-AUTH-11", "Chính sách mật khẩu mới yêu cầu độ dài và độ phức tạp", () =>
+            {
+                Assert(AuthService.ValidateNewPassword("short") != null, "đã chấp nhận mật khẩu quá ngắn");
+                Assert(AuthService.ValidateNewPassword("LongPassword123!") == null, "từ chối mật khẩu hợp lệ");
+                Assert(AuthService.ValidateNewPassword("onlylowercase123!") != null, "đã chấp nhận mật khẩu thiếu chữ hoa");
+                return Task.CompletedTask;
+            });
+            T("Thông báo", "TC-NOTIFY-01", "Cảnh báo được ghi vào log bền vững", async () =>
+            {
+                var path = Path.Combine(Path.GetTempPath(), "serverpulse-alert-" + Guid.NewGuid().ToString("N") + ".log");
+                try
+                {
+                    using (var notifications = new NotificationService(false, path))
+                        await notifications.NotifyAsync(new AlertEvent { Code = "INC-TEST", Severity = AlertSeverity.Critical, ServerName = "test-host", Message = "CPU cao" });
+                    var log = File.ReadAllText(path);
+                    Assert(log.Contains("INC-TEST") && log.Contains("test-host") && log.Contains("CPU cao"), "thiếu nội dung cảnh báo trong log");
+                }
+                finally { if (File.Exists(path)) File.Delete(path); }
+            });
+            T("P2 - tài khoản", "TC-USER-API-01", "Tạo tài khoản, phân quyền, reset và đổi mật khẩu qua API", RunUserManagementApi);
 
             // ---------------- API Host / Metrics / Event ----------------
             T(API, "TC-API-01", "GET /hosts trả danh sách có status + latest metric", async () =>
@@ -533,6 +612,78 @@ namespace Nhom3_NoSQL.Tests
                     Assert((int)(await http.GetAsync(BaseUrl + "/api/v1/hosts")).StatusCode == 401, "token cũ vẫn dùng được");
                 }
             });
+        }
+
+        static async Task RunUserManagementApi()
+        {
+            const int port = 5081;
+            var probe = new TcpListener(System.Net.IPAddress.Loopback, port);
+            try
+            {
+                probe.Start();
+            }
+            finally { probe.Stop(); }
+
+            var client = new MongoClient("mongodb://localhost:27017/?serverSelectionTimeoutMS=5000");
+            var databaseName = "ServerPulse_P2_Users_Test_" + Guid.NewGuid().ToString("N");
+            ApiServer api = null;
+            try
+            {
+                var context = new MongoDbContext("mongodb://localhost:27017/?serverSelectionTimeoutMS=5000", databaseName);
+                context.EnsureIndexes();
+                var adminEmail = "p2-admin-" + Guid.NewGuid().ToString("N") + "@test.local";
+                await context.Users.InsertOneAsync(AuthService.CreateUser(adminEmail, "P2 Admin", UserRole.Admin, "Test-Initial-Admin-2026!"));
+                var servers = new MongoServerRepository(context);
+                var metrics = new MongoMetricRepository(context);
+                var alerts = new MongoAlertRepository(context);
+                var events = new MongoEventRepository(context);
+                var auth = new AuthService(new MongoUserRepository(context));
+                var engine = new AlertEngineService(alerts, metrics, events, null, new NotificationService(false), null);
+                api = new ApiServer($"http://localhost:{port}/", context, servers, metrics, alerts, events, auth, engine);
+                api.Start();
+
+                var admin = new ApiClient($"http://localhost:{port}");
+                await admin.LoginAsync(adminEmail, "Test-Initial-Admin-2026!");
+                var viewerEmail = "p2-viewer-" + Guid.NewGuid().ToString("N") + "@test.local";
+                var viewerPassword = "P2-Viewer-Initial-2026!";
+                var created = await admin.CreateUserAsync(new CreateUserBody
+                {
+                    Email = viewerEmail, FullName = "P2 Viewer", Role = UserRole.Viewer, Password = viewerPassword
+                });
+                Assert(created.Role == UserRole.Viewer && (await admin.GetUsersAsync()).Any(u => u.Email == viewerEmail), "tài khoản mới không có trong danh sách");
+                await ExpectStatus(409, () => admin.CreateUserAsync(new CreateUserBody
+                {
+                    Email = viewerEmail, FullName = "Duplicate", Role = UserRole.Viewer, Password = viewerPassword
+                }));
+                await ExpectStatus(400, () => admin.CreateUserAsync(new CreateUserBody
+                {
+                    Email = "weak-password@test.local", FullName = "Weak", Role = UserRole.Viewer, Password = "weak"
+                }));
+                await ExpectStatus(400, () => admin.ChangePasswordAsync("wrong-password", "P2-Admin-Changed-2026!"));
+
+                var viewer = new ApiClient($"http://localhost:{port}");
+                await viewer.LoginAsync(viewerEmail, viewerPassword);
+                await ExpectStatus(403, () => viewer.GetUsersAsync());
+
+                var resetPassword = "P2-Viewer-Reset-2026!";
+                await admin.ResetUserPasswordAsync(viewerEmail, resetPassword);
+                await ExpectStatus(401, () => viewer.GetUsersAsync());
+                await ExpectStatus(401, () => new ApiClient($"http://localhost:{port}").LoginAsync(viewerEmail, viewerPassword));
+                await new ApiClient($"http://localhost:{port}").LoginAsync(viewerEmail, resetPassword);
+
+                var existingAdminSession = new ApiClient($"http://localhost:{port}");
+                await existingAdminSession.LoginAsync(adminEmail, "Test-Initial-Admin-2026!");
+                var newAdminPassword = "P2-Admin-Changed-2026!";
+                await admin.ChangePasswordAsync("Test-Initial-Admin-2026!", newAdminPassword);
+                await ExpectStatus(401, () => existingAdminSession.GetUsersAsync());
+                await ExpectStatus(401, () => new ApiClient($"http://localhost:{port}").LoginAsync(adminEmail, "Test-Initial-Admin-2026!"));
+                await new ApiClient($"http://localhost:{port}").LoginAsync(adminEmail, newAdminPassword);
+            }
+            finally
+            {
+                if (api != null) api.Stop();
+                client.DropDatabase(databaseName);
+            }
         }
     }
 }

@@ -215,6 +215,17 @@ Dashboard được thiết kế theo nguyên tắc **“tổng quát → chi ti�
 | POST | `/auth/login` | — | Body `{ email, password }` → `{ token, user: { email, fullName, role, expiresAt } }` | `LoginAsync` |
 | GET | `/auth/me` | Đăng nhập | Thông tin phiên hiện tại | `GetMeAsync` |
 | POST | `/auth/logout` | Đăng nhập | Hủy token | `LogoutAsync` |
+| POST | `/auth/password` | Đăng nhập | Body `{ currentPassword, newPassword }`; mật khẩu mới tối thiểu 12 ký tự, có chữ hoa/thường, số và ký tự đặc biệt. Thu hồi phiên, cần đăng nhập lại | `ChangePasswordAsync` |
+
+### 6.1.1. Quản lý tài khoản
+
+| Method | Endpoint | Quyền | Mô tả | Hàm ApiClient |
+|---|---|---|---|---|
+| GET | `/users` | Admin | Danh sách email, họ tên, vai trò; không trả hash hoặc salt | `GetUsersAsync` |
+| POST | `/users` | Admin | Tạo tài khoản. Body `{ email, fullName, role, password }`; `role` là `Admin` hoặc `Viewer`; mật khẩu theo chính sách ở trên | `CreateUserAsync` |
+| PUT | `/users/{email}/password` | Admin | Body `{ password }`; đặt lại mật khẩu và thu hồi mọi phiên của tài khoản đó | `ResetUserPasswordAsync` |
+
+Admin tạo tài khoản từ **menu tài khoản → Quản lý tài khoản**. Đặt lại mật khẩu là quy trình khôi phục được hỗ trợ; không có email reset vì ứng dụng chưa cấu hình xác minh danh tính qua email. Người dùng tự đổi mật khẩu từ **menu tài khoản → Đổi mật khẩu**. Mỗi lần đổi/đặt lại mật khẩu đều buộc đăng nhập lại và được ghi vào Event Log.
 
 ### 6.2. Host (máy chủ)
 
@@ -285,28 +296,37 @@ curl -X POST http://localhost:5080/api/v1/metrics/collector -H "Content-Type: ap
 
 ### 7.1. Cài đặt và chạy
 
-1. Cài **MongoDB Server** (6.0+) và bật service `MongoDB` (cổng 27017). Redis (`localhost:6379`) và Elasticsearch (`localhost:9200`) là tùy chọn – không có thì hệ thống vẫn chạy.
+1. Cài **MongoDB Server** (6.0+) và bật service `MongoDB`. Cấu hình kết nối và database trong `Frontend/appsettings.json`; mặc định dùng `mongodb://localhost:27017/?serverSelectionTimeoutMS=5000` và database `Nhom3_NoSQL_Db`. Chọn `App:Mode` là `Demo` hoặc `Real`, đặt `Collector:DiskDrive` thành ổ đĩa cần theo dõi (ví dụ `C:\` hoặc `D:\`), và cấu hình `Notifications:PopupEnabled` nếu cần bật/tắt popup. Redis và Elasticsearch là tùy chọn – có thể bỏ hoặc để trống cấu hình.
 2. Mở và chạy bằng **một trong hai** cách (project dạng SDK, thư viện NuGet tự tải khi build; `nuget.config` đã trỏ sẵn tới nuget.org):
    - **VS Code:** cài .NET SDK và extension *C# Dev Kit*. *File → Open Folder* → chọn thư mục `HeThongGiamSatHieuNangMayChu`. Vào tab **Run and Debug** (Ctrl+Shift+D), chọn **“1. ServerPulse (giao diện)”** → nhấn **F5**. Build riêng: Ctrl+Shift+B. Chạy bằng dòng lệnh: `dotnet run --project Nhom3_NoSQL`.
    - **Visual Studio 2022:** mở `Nhom3_NoSQL.sln`, chọn project **Nhom3_NoSQL** làm Startup Project → nhấn **F5**.
-5. Lần chạy đầu, hệ thống tự tạo database `Nhom3_NoSQL_Db`, index, 10 máy chủ (9 host demo + máy đang chạy), 7 ngày dữ liệu, 8 quy tắc ngưỡng, 6 sự cố mẫu và 2 tài khoản. Các lần sau, dữ liệu của host demo được bù cho khoảng thời gian app tắt.
-6. Màn hình đăng nhập hiện ra. Tài khoản demo (khai báo trong `Database/DemoDataSeeder.cs`):
+5. Hệ thống tạo database theo `MongoDb:Database` trong `Frontend/appsettings.json` và tạo index. Ở chế độ `Demo` (mặc định), lần chạy đầu tạo 9 host demo, host máy hiện tại, lịch sử metric, quy tắc ngưỡng và sự cố mẫu; dữ liệu demo được mô phỏng/bù khi chạy lại. Ở chế độ `Real`, app không nạp hoặc mô phỏng host/metric/ngưỡng/sự cố demo; app chỉ đăng ký host hiện tại và lưu metric do Collector thật thu thập. Chế độ `Real` không xóa dữ liệu demo đã có, vì vậy hãy dùng database mới trong `MongoDb:Database` nếu cần dữ liệu sạch.
+6. Với database `Real` mới chưa có tài khoản, đặt `SERVERPULSE_ADMIN_EMAIL`, `SERVERPULSE_ADMIN_NAME` và `SERVERPULSE_ADMIN_PASSWORD` trong môi trường của tài khoản Windows chạy ứng dụng trước lần chạy đầu. Mật khẩu bootstrap phải có ít nhất 12 ký tự và đủ chữ hoa, chữ thường, số, ký tự đặc biệt. Tài khoản bootstrap được tạo với vai trò Admin; sau đó tạo Viewer/Admin bổ sung trong menu **Quản lý tài khoản**. Không đưa các biến này vào source control hoặc file cấu hình. Database `Demo` tạo sẵn tài khoản demo chỉ để thử nghiệm:
 
 | Vai trò | Email | Mật khẩu |
 |---|---|---|
 | Admin (Quản trị viên) | admin@serverpulse.vn | Admin@123 |
 | Viewer (Người xem) | viewer@serverpulse.vn | Viewer@123 |
 
-7. Đóng cửa sổ chính là dừng toàn bộ hệ thống (API, Collector, mô phỏng). Đăng xuất thì quay lại màn hình đăng nhập.
-8. Nếu khởi động lỗi, xem file `startup-error.log` cạnh file `.exe` (`Nhom3_NoSQL\bin\Debug\net472\`).
+7. Đóng cửa sổ chính là dừng toàn bộ hệ thống (API, Collector, mô phỏng). Đăng xuất thì quay lại màn hình đăng nhập. Cảnh báo mới hiện bằng balloon ở khay hệ thống Windows và được ghi tại `%LOCALAPPDATA%\ServerPulse\logs\alerts.log`; lỗi khởi động, lỗi runtime được ghi trong cùng thư mục.
+8. Nếu khởi động lỗi, xem `%LOCALAPPDATA%\ServerPulse\logs\startup-error.log`.
+
+### 7.1.1. Chạy tự động, log, backup và khôi phục
+
+- **Tự chạy API/Collector khi đăng nhập Windows:** mở PowerShell trong thư mục triển khai và chạy `.\Ops\Install-AutoStart.ps1 -ExecutablePath "C:\ServerPulse\Nhom3_NoSQL.exe"`. Tác vụ chạy `--headless` dưới tài khoản hiện tại; mở app bình thường để vào giao diện. Gỡ tác vụ trong Task Scheduler bằng tên `ServerPulse`.
+- **Backup:** cài MongoDB Database Tools rồi chạy `.\Ops\Backup-MongoDb.ps1 -Database Nhom3_NoSQL_Db`. Mặc định file nén được lưu trong `%LOCALAPPDATA%\ServerPulse\backups`; bảo vệ bản backup như dữ liệu nhạy cảm và sao chép định kỳ sang thiết bị lưu trữ riêng.
+- **Khôi phục thử nghiệm:** trước tiên khôi phục vào database thử nghiệm để không ghi đè database đang chạy: `.\Ops\Restore-MongoDb.ps1 -ArchivePath "C:\backup\Nhom3_NoSQL_Db-20261115-030000.archive.gz" -SourceDatabase Nhom3_NoSQL_Db -TargetDatabase Nhom3_NoSQL_RestoreTest -Confirm`. Kiểm tra tài khoản, host, cảnh báo và lịch sử trong database đích. Khi cần khôi phục production, dừng app, xác nhận `TargetDatabase` đúng database đích, chạy script với `-Confirm`, rồi khởi động và kiểm tra lại.
+- Script restore dùng `--drop` và thay thế collection ở database đích; luôn giữ bản backup trước thao tác khôi phục. Lịch backup tự động cần được cấu hình riêng trong Windows Task Scheduler theo chính sách lưu trữ của đơn vị.
 
 **Các chế độ chạy khác** (đặt trong *Project → Properties → Debug → Command line arguments* hoặc chạy từ dòng lệnh):
 
 | Tham số | Tác dụng |
 |---|---|
 | *(không có)* | Chạy đầy đủ: API + Collector + giao diện |
-| `--headless` | Chỉ chạy API + Collector, không mở giao diện (dùng khi chạy kiểm thử hoặc làm server cho máy khác); dừng bằng Task Manager |
+| `--headless` | Chỉ chạy API + Collector trên máy hiện tại, không mở giao diện (dùng khi chạy kiểm thử); dừng bằng Task Manager |
 | `--screenshots <thư mục>` | Tự mở lần lượt các màn hình và lưu ảnh PNG vào thư mục (dùng để lấy hình cho báo cáo) |
+
+> **Agent từ máy khác chưa sẵn sàng cho triển khai mạng:** API hiện chỉ bind `localhost`; endpoint nhận metric chưa yêu cầu xác thực Agent và kết nối đang dùng HTTP. Không đổi API sang địa chỉ mạng hoặc chuyển tiếp cổng trước khi bổ sung xác thực Agent và HTTPS.
 
 ### 7.2. Các thao tác chính
 
@@ -336,7 +356,7 @@ curl -X POST http://localhost:5080/api/v1/metrics/collector -H "Content-Type: ap
 
 - **VS Code:** Run and Debug → chọn **“4. Chạy app + kiểm thử cùng lúc”** → F5 (bộ test tự chờ API khởi động). Hoặc khi app đang chạy, chọn **“3. Kiểm thử tự động”**.
 - **Visual Studio:** chạy app (F5), rồi chuột phải project **Nhom3_NoSQL.Tests** → *Debug → Start New Instance*.
-- **Dòng lệnh:** `dotnet run --project Nhom3_NoSQL.Tests` (khi app đang chạy).
+- **Dòng lệnh:** `dotnet run --project Nhom3_NoSQL.Tests` (khi app đang chạy và MongoDB khả dụng).
 
 - **Test giao diện thủ công (TC-MAN-07..12) tự động:** khi app đang chạy, VS Code chọn cấu hình **“5. Kiểm thử thủ công tự động”**, hoặc chạy `Nhom3_NoSQL.Tests.exe --thu-cong`. Chương trình dùng chuột/bàn phím thật nên không chạm chuột trong khoảng 1 phút; ảnh và kết quả lưu ở `Docs/screenshots/kiem_thu_thu_cong/`. Nếu máy bật bộ gõ tiếng Việt (UniKey) vẫn chạy đúng vì dữ liệu nhập tránh các phím dấu Telex.
 
@@ -359,3 +379,118 @@ Kết quả in ra màn hình và lưu vào `Nhom3_NoSQL.Tests/ket_qua_kiem_thu.t
 | 6 | `screenshots/06_su_co.png` | Cảnh báo & xử lý sự cố |
 | 7 | `screenshots/07_nhat_ky_su_kien.png` | Nhật ký sự kiện |
 | 8 | `screenshots/08_phan_quyen_viewer.png` | Phân quyền – tài khoản Viewer |
+
+---
+
+## 9. GUI Tool và truy vấn MongoDB (bổ sung theo tiêu chí ưu tiên)
+
+### 9.1. Công cụ GUI được đề xuất
+
+**MongoDB Compass** là lựa chọn phù hợp để minh họa vì dự án dùng MongoDB. Compass là GUI quản trị dữ liệu, tách biệt với giao diện WinForms của ServerPulse: Compass dùng để khám phá database/collection và chạy truy vấn; WinForms dùng để vận hành nghiệp vụ giám sát.
+
+| Công cụ | Điểm mạnh | Hạn chế cần cân nhắc | Phù hợp |
+|---|---|---|---|
+| MongoDB Compass | Giao diện trực quan cho collection, document, filter, index và Aggregation Pipeline; dễ đối chiếu trực tiếp với MongoDB | Cần cài riêng; thao tác tay không thay thế backup tự động hay API của ứng dụng | Học tập, kiểm tra dữ liệu, phát triển ứng dụng MongoDB |
+| Studio 3T | Cung cấp nhiều công cụ làm việc và chuyển đổi dữ liệu trong một GUI | Cần kiểm tra tính năng và điều kiện giấy phép theo phiên bản trước khi chọn | Nhóm phát triển cần nhiều tiện ích quản trị |
+| NoSQLBooster | Hỗ trợ quy trình viết/chạy truy vấn MongoDB theo hướng developer | Cần kiểm tra tính năng và điều kiện giấy phép theo phiên bản trước khi chọn | Lập trình viên thường xuyên làm việc với truy vấn |
+
+Với ứng dụng giám sát, GUI Tool có ích khi kiểm tra nhanh document, xác minh index và thử pipeline; ứng dụng thật vẫn nên truy cập dữ liệu qua API/repository để bảo đảm phân quyền, kiểm tra đầu vào và ghi nhật ký. Bản báo cáo này chọn Compass làm **phương án dự kiến**, chưa xác nhận đây là một trong các công cụ được phép theo rubric.
+
+### 9.2. Thiết kế dữ liệu NoSQL
+
+Mỗi loại dữ liệu được lưu theo cách truy cập và vòng đời riêng, thay vì gom mọi thông tin vào một document lớn:
+
+| Collection | Mô hình và lý do |
+|---|---|
+| `servers` | Một document cho cấu hình mỗi host; cập nhật độc lập và được tra cứu theo host |
+| `metrics` | Một document cho mỗi lần đo; append theo thời gian, tham chiếu host bằng `ServerId`, không nhúng toàn bộ lịch sử vào host. Index `{ServerId: 1, Timestamp: -1}` phục vụ đọc lịch sử; TTL 30 ngày giới hạn dữ liệu chuỗi thời gian |
+| `alert_rules` | Quy tắc tách khỏi host để hỗ trợ quy tắc toàn cục (`ServerId` rỗng) và ngoại lệ riêng từng host |
+| `alert_events` | Mỗi sự cố lưu giá trị/ngưỡng lúc kích hoạt cùng trạng thái OPENING → ACKNOWLEDGED → RESOLVED để truy vấn vòng đời |
+| `event_logs` | Nhật ký thao tác lưu thành bản ghi riêng, phù hợp truy vấn theo thời gian và giữ dấu vết |
+| `users` | Tài khoản độc lập; index `Email` duy nhất ngăn trùng tài khoản |
+
+Các collection liên kết bằng `ServerId` thay vì nhúng mảng metrics/alerts không giới hạn vào `servers`. Cách này phù hợp với dữ liệu phát sinh liên tục, cho phép giới hạn lịch sử bằng TTL, và tránh document host tăng trưởng không giới hạn. Các index cụ thể được tạo trong `MongoDbContext.EnsureIndexes()`.
+
+### 9.3. Truy vấn mẫu trong MongoDB Compass
+
+Chọn database `Nhom3_NoSQL_Db`, mở collection tương ứng, nhập biểu thức BSON vào ô **Filter**. Tên field lưu trong MongoDB giữ PascalCase như `ServerId`, `Timestamp`, `CpuUsagePercent`.
+
+**Tìm host theo khu vực và trạng thái hoạt động:**
+
+```javascript
+{ Region: "SGN-AZ1", IsActive: true }
+```
+
+**Lấy metric của một host trong giờ gần nhất, mới nhất trước:**
+
+```javascript
+{ ServerId: "<ServerId>", Timestamp: { $gte: new Date(Date.now() - 60 * 60 * 1000) } }
+```
+
+Đặt **Sort** là `{ Timestamp: -1 }` và **Limit** là `20` để kiểm tra các lần đo gần nhất.
+
+**Tìm sự cố Critical chưa xử lý:**
+
+```javascript
+{ Severity: 1, Status: { $in: ["OPENING", "ACKNOWLEDGED"] } }
+```
+
+`AlertSeverity` chưa được cấu hình serialize thành chuỗi trong MongoDB nên `Warning = 0`, `Critical = 1`; `Status` là chuỗi.
+
+Trong tab **Aggregations** của collection `metrics`, pipeline sau tính CPU/RAM trung bình theo bucket 10 phút trong 6 giờ gần nhất; đây là cùng cách nhóm thời gian mà Dashboard sử dụng:
+
+```javascript
+[
+  { $match: { Timestamp: { $gte: new Date(Date.now() - 6 * 60 * 60 * 1000) } } },
+  {
+    $group: {
+      _id: {
+        $subtract: [
+          { $toLong: "$Timestamp" },
+          { $mod: [{ $toLong: "$Timestamp" }, 600000] }
+        ]
+      },
+      cpuAvg: { $avg: "$CpuUsagePercent" },
+      ramAvg: { $avg: "$RamUsagePercent" },
+      samples: { $sum: 1 }
+    }
+  },
+  { $sort: { _id: 1 } },
+  {
+    $project: {
+      _id: 0,
+      bucketStart: { $toDate: "$_id" },
+      cpuAvg: { $round: ["$cpuAvg", 1] },
+      ramAvg: { $round: ["$ramAvg", 1] },
+      samples: 1
+    }
+  }
+]
+```
+
+Pipeline time-bucket trên vẫn là truy vấn mẫu, chưa được chạy. Đã kiểm tra Compass 1.53.2 trên collection `metrics` của database thử nghiệm đã khôi phục:
+
+- Filter `{ CpuUsagePercent: { $gte: 20 } }` trả về 1 document.
+- Stage `$count` với tên trường mặc định `string` trả về `{ string: 1 }`.
+
+Đây là dữ liệu tổng hợp trong database test, không phải dữ liệu của database ứng dụng. Cần thay `<ServerId>` bằng ID thực tế trong collection `servers` khi chạy truy vấn theo host.
+
+### 9.4. Import/export, backup và khôi phục
+
+- **Xuất danh sách nghiệp vụ:** giao diện Máy chủ có **Xuất CSV**, xuất các host theo bộ lọc hiện tại; không bao gồm metrics, tài khoản hoặc toàn bộ database.
+- **Xuất toàn bộ database:** `Ops/Backup-MongoDb.ps1` gọi `mongodump` tạo archive gzip cho database được chọn. Archive là bản backup có thể dùng chuyển/khôi phục database, không phải file CSV.
+- **Nhập/khôi phục database:** `Ops/Restore-MongoDb.ps1` gọi `mongorestore` và ánh xạ namespace sang database đích. Luôn dùng database thử nghiệm riêng để kiểm tra trước; script thay thế collection ở database đích (`--drop`).
+- **Kiểm chứng đã chạy:** tạo archive database `ServerPulse_BackupEvidence_20261115_083556` tại `%TEMP%\ServerPulse_BackupEvidence_20261115_083556\backup.archive.gz`, rồi restore sang `ServerPulse_BackupEvidence_20261115_083556_Restored`. Cả 6 collection (`servers`, `metrics`, `alert_rules`, `alert_events`, `event_logs`, `users`) có 1 document; không restore đè database ứng dụng.
+- **CSV import/export:** đã thử vòng lặp bằng MongoDB Database Tools 100.20.1: xuất 5 metric từ `Nhom3_NoSQL_Db.metrics` ra [`Docs/csv-evidence/metrics-sample.csv`](csv-evidence/metrics-sample.csv), nhập vào `ServerPulse_CsvEvidence_20261115.metrics_csv_import`, rồi xác minh đủ 5 document. Đây là kiểm thử CLI, chưa thay thế thao tác CSV trong Compass hoặc ảnh minh chứng GUI.
+- Các database test và archive nêu trên vẫn còn trên máy; database `ServerPulse_BackupCheck_20261115083448115e00` cũng còn từ lần thử backup đầu không thành, và database `ServerPulse_CsvEvidence_20261115` được tạo cho kiểm thử CSV. Chưa xóa dữ liệu test khi chưa được xác nhận.
+
+### 9.5. Trạng thái các tiêu chí ưu tiên
+
+| Tiêu chí | Tình trạng hiện tại | Việc còn lại |
+|---|---|---|
+| Tìm hiểu GUI Tool, chức năng, so sánh và điểm mạnh theo ứng dụng | Đã bổ sung phần thuyết minh và so sánh sơ bộ; Compass là lựa chọn dự kiến | Đối chiếu danh sách GUI Tool trong rubric và xác nhận với giảng viên nên chọn hướng GUI Tool hay phương án điểm thay thế |
+| Truy vấn cơ bản/nâng cao trên GUI Tool | Compass đã chạy Filter và `$count` trên database test đã restore; pipeline time-bucket vẫn chưa chạy | Lưu ảnh kết quả thành file và xác nhận rubric chấp nhận Compass |
+| Import/export dữ liệu | CSV round-trip qua MongoDB Database Tools PASS (5/5 document); archive backup/restore đã chạy | Chưa thử CSV import/export trong Compass và chưa lưu ảnh minh chứng GUI |
+| Backup/restore | Đã PASS trên database test; 6/6 collection có đúng 1 document sau restore | Lưu ảnh minh chứng; dọn database/archive test chỉ sau khi được xác nhận |
+
+MongoDB Compass 1.53.2 và MongoDB Database Tools 100.20.1 đã được cài đặt. Chưa có ảnh chụp được lưu thành file trong repo. Cần đối chiếu danh sách GUI Tool trong rubric và xác nhận với giảng viên hướng Compass hay phương án điểm thay thế.

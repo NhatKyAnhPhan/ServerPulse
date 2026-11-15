@@ -52,6 +52,26 @@ namespace Nhom3_NoSQL.Backend.Api
 
         public Task<UserSession> GetMeAsync() => SendAsync<UserSession>(HttpMethod.Get, "auth/me");
 
+        public async Task ChangePasswordAsync(string currentPassword, string newPassword)
+        {
+            await SendAsync<OkDto>(HttpMethod.Post, "auth/password", new ChangePasswordBody
+            {
+                CurrentPassword = currentPassword,
+                NewPassword = newPassword
+            });
+            Token = null;
+            User = null;
+        }
+
+        public Task<List<UserAccountDto>> GetUsersAsync() =>
+            SendAsync<List<UserAccountDto>>(HttpMethod.Get, "users");
+
+        public Task<UserAccountDto> CreateUserAsync(CreateUserBody body) =>
+            SendAsync<UserAccountDto>(HttpMethod.Post, "users", body);
+
+        public Task ResetUserPasswordAsync(string email, string password) =>
+            SendAsync<OkDto>(HttpMethod.Put, "users/" + Uri.EscapeDataString(email) + "/password", new ResetPasswordBody { Password = password });
+
         // ---------------- Host ----------------
         public Task<List<HostView>> GetHostsAsync(string q = null, string status = null) =>
             SendAsync<List<HostView>>(HttpMethod.Get, "hosts" + Query(("q", q), ("status", status)));

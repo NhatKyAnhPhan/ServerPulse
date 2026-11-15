@@ -20,15 +20,18 @@ namespace Nhom3_NoSQL.Backend.Services
         private readonly IMetricRepository _metricRepo;
         private readonly AlertEngineService _alertEngine;
         private readonly PerformanceCounter _cpuCounter;
+        private readonly string _diskDrive;
         private System.Threading.Timer _timer;
         private long _lastRx, _lastTx;
         private DateTime _lastNetAt;
 
-        public MetricCollectorService(ICacheService cache, IMetricRepository metricRepo, AlertEngineService alertEngine)
+        public MetricCollectorService(ICacheService cache, IMetricRepository metricRepo, AlertEngineService alertEngine, string diskDrive)
         {
             _cache = cache;
             _metricRepo = metricRepo;
             _alertEngine = alertEngine;
+            _diskDrive = new DriveInfo(diskDrive ?? throw new ArgumentNullException(nameof(diskDrive))).Name;
+            GetDiskUsagePercent(_diskDrive);
             _cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
         }
 
@@ -49,7 +52,7 @@ namespace Nhom3_NoSQL.Backend.Services
                 ServerId = serverId,
                 CpuUsagePercent = Math.Round(_cpuCounter.NextValue(), 1),
                 RamUsagePercent = Math.Round(GetRamUsagePercent(), 1),
-                DiskUsagePercent = Math.Round(GetDiskUsagePercent(), 1),
+                DiskUsagePercent = Math.Round(GetDiskUsagePercent(_diskDrive), 1),
                 NetworkInKbps = Math.Round(inKbps, 1),
                 NetworkOutKbps = Math.Round(outKbps, 1),
             };
@@ -89,9 +92,16 @@ namespace Nhom3_NoSQL.Backend.Services
             return (double)(m.ullTotalPhys - m.ullAvailPhys) / m.ullTotalPhys * 100;
         }
 
-        private static double GetDiskUsagePercent()
+        public static double GetDiskUsagePercent(string driveName)
         {
-            var drive = new DriveInfo("C");
+            if (string.IsNullOrWhiteSpace(driveName))
+                throw new ArgumentException("Cần cấu hình ổ đĩa để thu thập dung lượng.", nameof(driveName));
+
+            var drive = new DriveInfo(driveName);
+            if (!drive.IsReady)
+                throw new InvalidOperationException($"Ổ đĩa '{drive.Name}' không sẵn sàng.");
+            if (drive.TotalSize <= 0)
+                throw new InvalidOperationException($"Không đọc được dung lượng ổ đĩa '{drive.Name}'.");
             var used = drive.TotalSize - drive.AvailableFreeSpace;
             return (double)used / drive.TotalSize * 100;
         }

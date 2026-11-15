@@ -217,4 +217,156 @@ namespace Nhom3_NoSQL.Frontend
             await Api.SaveThresholdAsync(rule);
         }
     }
+
+    public class ChangePasswordDialog : DialogBase
+    {
+        readonly InputBox _current, _next, _confirm;
+
+        public ChangePasswordDialog(ApiClient api)
+            : base(api, "Đổi mật khẩu", "Phiên đăng nhập sẽ kết thúc sau khi đổi mật khẩu thành công.")
+        {
+            _current = AddField("Mật khẩu hiện tại", "", 2);
+            _current.Box.UseSystemPasswordChar = true;
+            _next = AddField("Mật khẩu mới", "", 2);
+            _next.Box.UseSystemPasswordChar = true;
+            _confirm = AddField("Nhập lại mật khẩu mới", "", 2);
+            _confirm.Box.UseSystemPasswordChar = true;
+        }
+
+        protected override async Task SaveAsync()
+        {
+            if (_next.Text != _confirm.Text) throw new ValidationException("Mật khẩu xác nhận không khớp.");
+            await Api.ChangePasswordAsync(_current.Text, _next.Text);
+        }
+    }
+
+    public class CreateUserDialog : DialogBase
+    {
+        readonly InputBox _email, _name, _password;
+        readonly ComboBox _role;
+
+        public CreateUserDialog(ApiClient api)
+            : base(api, "Tạo tài khoản", "Mật khẩu phải có ít nhất 12 ký tự, gồm chữ hoa, chữ thường, số và ký tự đặc biệt.")
+        {
+            _email = AddField("Email", "", 2);
+            _name = AddField("Họ tên", "", 2);
+            _role = Theme.Combo(new[] { UserRole.Viewer, UserRole.Admin });
+            AddControl("Vai trò", _role, 2);
+            _password = AddField("Mật khẩu tạm thời", "", 2);
+            _password.Box.UseSystemPasswordChar = true;
+        }
+
+        protected override async Task SaveAsync()
+        {
+            await Api.CreateUserAsync(new CreateUserBody
+            {
+                Email = _email.Text.Trim(),
+                FullName = _name.Text.Trim(),
+                Role = _role.SelectedItem?.ToString(),
+                Password = _password.Text
+            });
+        }
+    }
+
+    public class ResetPasswordDialog : DialogBase
+    {
+        readonly string _email;
+        readonly InputBox _password;
+
+        public ResetPasswordDialog(ApiClient api, string email)
+            : base(api, "Đặt lại mật khẩu", "Người dùng sẽ cần đăng nhập lại bằng mật khẩu mới.")
+        {
+            _email = email;
+            _password = AddField("Mật khẩu mới", "", 2);
+            _password.Box.UseSystemPasswordChar = true;
+        }
+
+        protected override Task SaveAsync() => Api.ResetUserPasswordAsync(_email, _password.Text);
+    }
+
+    public class UserManagementDialog : Form
+    {
+        readonly ApiClient _api;
+        readonly DataGridView _grid = new DataGridView();
+        readonly RoundButton _create = new RoundButton("Tạo tài khoản", RoundButton.Kind.Primary);
+        readonly RoundButton _reset = new RoundButton("Đặt lại mật khẩu");
+
+        public UserManagementDialog(ApiClient api)
+        {
+            _api = api;
+            Text = "Quản lý tài khoản";
+            BackColor = Theme.Panel;
+            ForeColor = Theme.Text;
+            Font = Theme.Sans(10);
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = MinimizeBox = false;
+            ShowInTaskbar = false;
+            ClientSize = new Size(680, 420);
+            Theme.DarkTitleBar(this);
+
+            _grid.Dock = DockStyle.Fill;
+            _grid.ReadOnly = true;
+            _grid.AllowUserToAddRows = false;
+            _grid.AllowUserToDeleteRows = false;
+            _grid.AllowUserToResizeRows = false;
+            _grid.MultiSelect = false;
+            _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            _grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+            _grid.BackgroundColor = Theme.Card;
+            _grid.BorderStyle = BorderStyle.None;
+            _grid.RowHeadersVisible = false;
+            _grid.EnableHeadersVisualStyles = false;
+            _grid.ColumnHeadersDefaultCellStyle.BackColor = Theme.Card2;
+            _grid.ColumnHeadersDefaultCellStyle.ForeColor = Theme.Text;
+            _grid.DefaultCellStyle.BackColor = Theme.Panel;
+            _grid.DefaultCellStyle.ForeColor = Theme.Text;
+            _grid.DefaultCellStyle.SelectionBackColor = Theme.SelBg;
+            _grid.DefaultCellStyle.SelectionForeColor = Theme.Text;
+            _grid.Columns.Add("email", "Email");
+            _grid.Columns.Add("name", "Họ tên");
+            _grid.Columns.Add("role", "Vai trò");
+
+            var footer = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 58,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(12),
+                BackColor = Theme.Panel
+            };
+            var close = new RoundButton("Đóng") { DialogResult = DialogResult.Cancel };
+            _create.Click += async (s, e) =>
+            {
+                using (var dialog = new CreateUserDialog(_api))
+                    if (dialog.ShowDialog(this) == DialogResult.OK) await RefreshUsersAsync();
+            };
+            _reset.Click += async (s, e) =>
+            {
+                if (_grid.CurrentRow == null) return;
+                var email = Convert.ToString(_grid.CurrentRow.Cells[0].Value);
+                using (var dialog = new ResetPasswordDialog(_api, email))
+                    if (dialog.ShowDialog(this) == DialogResult.OK)
+                        MessageBox.Show(this, "Mật khẩu đã được đặt lại. Phiên đăng nhập của tài khoản đó đã bị thu hồi.", "ServerPulse");
+            };
+            footer.Controls.AddRange(new Control[] { close, _reset, _create });
+            Controls.Add(_grid);
+            Controls.Add(footer);
+            Shown += async (s, e) => await RefreshUsersAsync();
+        }
+
+        async Task RefreshUsersAsync()
+        {
+            try
+            {
+                var users = await _api.GetUsersAsync();
+                _grid.Rows.Clear();
+                foreach (var user in users) _grid.Rows.Add(user.Email, user.FullName, user.Role);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Không tải được danh sách tài khoản: " + ex.Message, "ServerPulse", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
 }

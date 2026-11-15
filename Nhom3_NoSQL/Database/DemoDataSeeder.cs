@@ -9,7 +9,7 @@ using Nhom3_NoSQL.Backend.Services;
 
 namespace Nhom3_NoSQL.Database
 {
-    //Nạp dữ liệu mẫu khi CSDL trống + mô phỏng Agent gửi metric cho các host demo (mỗi 5 giây)
+    //Nạp dữ liệu mẫu khi bật Demo; chế độ Real chỉ đăng ký host máy hiện tại.
     public class DemoDataSeeder
     {
         // Tài khoản demo (chỉ dùng cho môi trường đồ án)
@@ -44,15 +44,39 @@ namespace Nhom3_NoSQL.Database
             _engine = engine;
         }
 
-        public async Task SeedAsync()
+        public async Task SeedAsync(bool includeDemoData = true, string bootstrapEmail = null, string bootstrapName = null, string bootstrapPassword = null)
         {
             if (await _ctx.Users.CountDocumentsAsync(FilterDefinition<AppUser>.Empty) == 0)
             {
-                await _ctx.Users.InsertManyAsync(new[]
+                if (includeDemoData)
                 {
-                    AuthService.CreateUser(AdminEmail, "Admin Ops", UserRole.Admin, AdminPassword),
-                    AuthService.CreateUser(ViewerEmail, "Viewer Ops", UserRole.Viewer, ViewerPassword),
-                });
+                    await _ctx.Users.InsertManyAsync(new[]
+                    {
+                        AuthService.CreateUser(AdminEmail, "Admin Ops", UserRole.Admin, AdminPassword),
+                        AuthService.CreateUser(ViewerEmail, "Viewer Ops", UserRole.Viewer, ViewerPassword),
+                    });
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(bootstrapEmail) || string.IsNullOrWhiteSpace(bootstrapName) || string.IsNullOrEmpty(bootstrapPassword))
+                        throw new InvalidOperationException("Database chưa có tài khoản. Hãy đặt SERVERPULSE_ADMIN_EMAIL, SERVERPULSE_ADMIN_NAME và SERVERPULSE_ADMIN_PASSWORD để tạo Admin ban đầu.");
+                    var passwordError = AuthService.ValidateNewPassword(bootstrapPassword);
+                    if (passwordError != null) throw new InvalidOperationException("Mật khẩu Admin khởi tạo không hợp lệ: " + passwordError);
+                    var email = bootstrapEmail.Trim().ToLowerInvariant();
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
+                        throw new InvalidOperationException("SERVERPULSE_ADMIN_EMAIL không phải email hợp lệ.");
+                    await _ctx.Users.InsertOneAsync(AuthService.CreateUser(email, bootstrapName.Trim(), UserRole.Admin, bootstrapPassword));
+                }
+            }
+
+            if (!includeDemoData)
+            {
+                var demoAdmin = await _ctx.Users.Find(u => u.Email == AdminEmail).FirstOrDefaultAsync();
+                var demoViewer = await _ctx.Users.Find(u => u.Email == ViewerEmail).FirstOrDefaultAsync();
+                if (AuthService.Verify(demoAdmin, AdminPassword) || AuthService.Verify(demoViewer, ViewerPassword))
+                    throw new InvalidOperationException("Database Real vẫn dùng mật khẩu tài khoản demo. Hãy chạy Demo, đổi mật khẩu demo trong menu tài khoản rồi chuyển lại Real, hoặc dùng database Real mới.");
+                await EnsureLocalHostAsync();
+                return;
             }
 
             if (await _ctx.Servers.CountDocumentsAsync(FilterDefinition<ServerInfo>.Empty) > 0)
@@ -72,8 +96,7 @@ namespace Nhom3_NoSQL.Database
                 Host("storage-s3-01", "10.20.7.12", "TrueNAS SCALE", "Object storage", "SGN-AZ1", 8, 32, 12000),
                 Host("proxy-edge-02", "10.30.1.22", "Alpine 3.20", "Reverse proxy biên", "SGN-EDGE", 4, 4, 60),
                 Host("backup-hn-03", "10.40.6.13", "Ubuntu 22.04 LTS", "Backup server", "HN-DC1", 4, 16, 8000),
-                Host(Environment.MachineName.ToLowerInvariant(), "127.0.0.1", "Windows (máy chạy app)", "Máy hiện tại - Agent thật (PerformanceCounter)", "LOCAL",
-                    Environment.ProcessorCount, 0, 0),
+                LocalHost(),
             };
             await _ctx.Servers.InsertManyAsync(hosts);
             var byName = hosts.ToDictionary(h => h.Name);
@@ -157,23 +180,26 @@ namespace Nhom3_NoSQL.Database
         }
 
         //Bắt đầu mô phỏng Agent cho các host demo + quét heartbeat định kỳ
-        public void StartSimulation()
+        public void StartSimulation(bool includeDemoMetrics = true)
         {
-            _simTimer = new Timer(async _ =>
+            if (includeDemoMetrics)
             {
-                try
+                _simTimer = new Timer(async _ =>
                 {
-                    var hosts = await _ctx.Servers.Find(s => s.IsActive).ToListAsync();
-                    foreach (var h in hosts)
+                    try
                     {
-                        if (!Profiles.TryGetValue(h.Name, out var p) || p.Offline) continue;
-                        var s = Sample(h.Id, p, DateTime.UtcNow);
-                        await _ctx.Metrics.InsertOneAsync(s);
-                        await _engine.EvaluateAsync(s, h.Name);
+                        var hosts = await _ctx.Servers.Find(s => s.IsActive).ToListAsync();
+                        foreach (var h in hosts)
+                        {
+                            if (!Profiles.TryGetValue(h.Name, out var p) || p.Offline) continue;
+                            var s = Sample(h.Id, p, DateTime.UtcNow);
+                            await _ctx.Metrics.InsertOneAsync(s);
+                            await _engine.EvaluateAsync(s, h.Name);
+                        }
                     }
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Simulator] " + ex.Message); }
-            }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5));
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Simulator] " + ex.Message); }
+                }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5));
+            }
 
             _heartbeatTimer = new Timer(async _ =>
             {
@@ -188,6 +214,17 @@ namespace Nhom3_NoSQL.Database
                 Name = name, IpAddress = ip, OperatingSystem = os, Description = desc, Region = region,
                 CpuCores = cores, RamTotalGb = ramGb, DiskTotalGb = diskGb, CreatedAt = DateTime.UtcNow.AddDays(-30)
             };
+
+        async Task EnsureLocalHostAsync()
+        {
+            var localName = Environment.MachineName.ToLowerInvariant();
+            if (await _ctx.Servers.CountDocumentsAsync(s => s.Name == localName) > 0) return;
+            await _ctx.Servers.InsertOneAsync(LocalHost());
+        }
+
+        static ServerInfo LocalHost() =>
+            Host(Environment.MachineName.ToLowerInvariant(), "127.0.0.1", "Windows (máy chạy app)",
+                "Máy hiện tại - Agent thật (PerformanceCounter)", "LOCAL", Environment.ProcessorCount, 0, 0);
 
         static AlertRule Rule(ServerInfo host, MetricType m, double warn, double crit, int duration, string unit = "%", bool enabled = true) =>
             new AlertRule

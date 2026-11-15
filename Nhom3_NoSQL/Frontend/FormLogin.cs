@@ -59,7 +59,7 @@ namespace Nhom3_NoSQL.Frontend
             _email = new InputBox(Theme.Icon.Mail, "admin@serverpulse.vn") { Location = new Point(24, 140), Width = 352 };
             var lp = Theme.Label("Mật khẩu", Theme.Sans(9), Theme.Text2); lp.Location = new Point(24, 192);
             var forgot = Theme.Label("Quên mật khẩu?", Theme.Semi(9), Theme.Cyan); forgot.Location = new Point(280, 192); forgot.Cursor = Cursors.Hand;
-            forgot.Click += (s, e) => MessageBox.Show(this, "Liên hệ ops@serverpulse.vn để đặt lại mật khẩu.", "ServerPulse");
+            forgot.Click += (s, e) => MessageBox.Show(this, "Liên hệ Admin để đặt lại mật khẩu. Khi đã đăng nhập, bạn có thể tự đổi mật khẩu trong menu tài khoản.", "ServerPulse");
             _password = new InputBox(Theme.Icon.Lock, "••••••••", password: true) { Location = new Point(24, 214), Width = 352 };
             _password.Trailing.Text = Theme.Icon.EyeOff;
             _password.Trailing.Cursor = Cursors.Hand;

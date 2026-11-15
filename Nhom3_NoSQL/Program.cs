@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using MongoDB.Driver;
@@ -54,8 +55,7 @@ namespace Nhom3_NoSQL
             }
             catch (Exception ex)
             {
-                // Ghi lỗi khởi động ra file cạnh .exe để dễ chẩn đoán
-                var log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "startup-error.log");
+                var log = GetLogPath("startup-error.log");
                 File.WriteAllText(log, DateTime.Now + Environment.NewLine + ex);
                 MessageBox.Show(ex.Message + "\n\nChi tiết: " + log, "ServerPulse - lỗi khởi động", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
@@ -74,55 +74,90 @@ namespace Nhom3_NoSQL
         static void ReportError(Exception ex)
         {
             if (ex == null) return;
-            var log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "error.log");
+            var log = GetLogPath("error.log");
             try { File.AppendAllText(log, DateTime.Now + Environment.NewLine + ex + Environment.NewLine + Environment.NewLine); } catch { }
             MessageBox.Show(ex.Message + "\n\nChi tiết: " + log, "ServerPulse - lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
 
+        static string GetLogPath(string fileName)
+        {
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ServerPulse", "logs");
+            Directory.CreateDirectory(directory);
+            return Path.Combine(directory, fileName);
+        }
+
         static void Run(string[] args)
         {
-            //Có thể thay thế chuỗi kết nối trực tiếp hoặc đọc từ file cấu hình App.config
-            string mongoConn = "mongodb://localhost:27017/?serverSelectionTimeoutMS=5000";
-            string mongoDbName = "Nhom3_NoSQL_Db";
-            string redisConn = "localhost:6379,abortConnect=false,connectTimeout=2000";
-            string elasticUri = "http://localhost:9200";
+            var settingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Frontend", "appsettings.json");
+            if (!File.Exists(settingsPath))
+                throw new FileNotFoundException("Không tìm thấy file cấu hình Frontend\\appsettings.json.", settingsPath);
+
+            string mongoConn;
+            string mongoDbName;
+            string redisConn;
+            string elasticUri;
+            string appMode;
+            string diskDrive;
+            bool notificationPopup = true;
+            using (var settings = JsonDocument.Parse(File.ReadAllText(settingsPath)))
+            {
+                mongoConn = ReadRequiredSetting(settings.RootElement, "MongoDb", "ConnectionString", settingsPath);
+                mongoDbName = ReadRequiredSetting(settings.RootElement, "MongoDb", "Database", settingsPath);
+                redisConn = ReadOptionalSetting(settings.RootElement, "Redis", "ConnectionString", settingsPath);
+                elasticUri = ReadOptionalSetting(settings.RootElement, "Elasticsearch", "Uri", settingsPath);
+                appMode = ReadRequiredSetting(settings.RootElement, "App", "Mode", settingsPath);
+                diskDrive = ReadRequiredSetting(settings.RootElement, "Collector", "DiskDrive", settingsPath);
+                notificationPopup = ReadOptionalBooleanSetting(settings.RootElement, "Notifications", "PopupEnabled", settingsPath, true);
+            }
+            if (!string.Equals(appMode, "Demo", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(appMode, "Real", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Cấu hình 'App:Mode' chỉ nhận giá trị 'Demo' hoặc 'Real'.");
+            var demoMode = string.Equals(appMode, "Demo", StringComparison.OrdinalIgnoreCase);
 
             MongoContext = new MongoDbContext(mongoConn, mongoDbName);
             try { MongoContext.EnsureIndexes(); }
-            catch (TimeoutException ex)
+            catch (MongoException ex)
             {
-                throw new Exception("Không kết nối được MongoDB tại localhost:27017. Hãy khởi động MongoDB rồi chạy lại.", ex);
+                throw new InvalidOperationException("Không kết nối được MongoDB theo cấu hình trong Frontend\\appsettings.json. Hãy kiểm tra MongoDB và ConnectionString.", ex);
             }
 
             // Redis và Elasticsearch là tùy chọn: không chạy thì hệ thống vẫn hoạt động với MongoDB
-            try
+            if (!string.IsNullOrWhiteSpace(redisConn))
             {
-                var redis = new RedisCacheService(redisConn);
-                CacheService = redis.IsConnected ? redis : null;
+                try
+                {
+                    var redis = new RedisCacheService(redisConn);
+                    CacheService = redis.IsConnected ? redis : null;
+                }
+                catch { CacheService = null; }
             }
-            catch { CacheService = null; }
-            SearchService = new ElasticSearchService(elasticUri);
+            SearchService = string.IsNullOrWhiteSpace(elasticUri) ? null : new ElasticSearchService(elasticUri);
 
             ServerRepo = new MongoServerRepository(MongoContext);
             MetricRepo = new MongoMetricRepository(MongoContext);
             AlertRepo = new MongoAlertRepository(MongoContext);
             EventRepo = new MongoEventRepository(MongoContext);
             UserRepo = new MongoUserRepository(MongoContext);
-            NotificationService = new NotificationService();
+            NotificationService = new NotificationService(notificationPopup);
 
             AlertEngine = new AlertEngineService(AlertRepo, MetricRepo, EventRepo, SearchService, NotificationService, CacheService);
-            MetricCollector = new MetricCollectorService(CacheService, MetricRepo, AlertEngine);
             Auth = new AuthService(UserRepo);
 
-            // Dữ liệu mẫu + mô phỏng Agent cho các host demo
+            // Chỉ nạp và mô phỏng dữ liệu host mẫu khi App:Mode là Demo
             Seeder = new DemoDataSeeder(MongoContext, AlertEngine);
-            Seeder.SeedAsync().GetAwaiter().GetResult();
-            Seeder.StartSimulation();
+            Seeder.SeedAsync(
+                demoMode,
+                Environment.GetEnvironmentVariable("SERVERPULSE_ADMIN_EMAIL"),
+                Environment.GetEnvironmentVariable("SERVERPULSE_ADMIN_NAME"),
+                Environment.GetEnvironmentVariable("SERVERPULSE_ADMIN_PASSWORD")).GetAwaiter().GetResult();
+            Seeder.StartSimulation(demoMode);
+            MetricCollector = new MetricCollectorService(CacheService, MetricRepo, AlertEngine, diskDrive);
 
             // Agent thật cho chính máy đang chạy app (chu kỳ 5 giây)
             var localName = Environment.MachineName.ToLowerInvariant();
             var local = MongoContext.Servers.Find(s => s.Name == localName).FirstOrDefault();
-            if (local != null) MetricCollector.Start(local.Id, local.Name, TimeSpan.FromSeconds(5));
+            if (local != null)
+                MetricCollector.Start(local.Id, local.Name, TimeSpan.FromSeconds(5));
 
             // REST API - giao diện WinForms và Agent đều giao tiếp qua đây
             Api = new ApiServer(ApiUrl, MongoContext, ServerRepo, MetricRepo, AlertRepo, EventRepo, Auth, AlertEngine);
@@ -137,6 +172,55 @@ namespace Nhom3_NoSQL
                 RunUi(new ApiClient(ApiUrl));
             Api.Stop();
             MetricCollector.Dispose();
+            if (NotificationService is IDisposable) ((IDisposable)NotificationService).Dispose();
+        }
+
+        static string ReadRequiredSetting(JsonElement root, string section, string name, string settingsPath)
+        {
+            JsonElement sectionElement;
+            JsonElement valueElement;
+            if (!root.TryGetProperty(section, out sectionElement) ||
+                sectionElement.ValueKind != JsonValueKind.Object ||
+                !sectionElement.TryGetProperty(name, out valueElement) ||
+                valueElement.ValueKind != JsonValueKind.String ||
+                string.IsNullOrWhiteSpace(valueElement.GetString()))
+                throw new InvalidDataException($"Thiếu cấu hình bắt buộc '{section}:{name}' trong {settingsPath}.");
+
+            return valueElement.GetString();
+        }
+
+        static string ReadOptionalSetting(JsonElement root, string section, string name, string settingsPath)
+        {
+            JsonElement sectionElement;
+            if (!root.TryGetProperty(section, out sectionElement))
+                return null;
+            if (sectionElement.ValueKind != JsonValueKind.Object)
+                throw new InvalidDataException($"Cấu hình '{section}' trong {settingsPath} phải là một đối tượng.");
+
+            JsonElement valueElement;
+            if (!sectionElement.TryGetProperty(name, out valueElement))
+                return null;
+            if (valueElement.ValueKind != JsonValueKind.String)
+                throw new InvalidDataException($"Cấu hình '{section}:{name}' trong {settingsPath} phải là chuỗi.");
+
+            var value = valueElement.GetString();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+
+        static bool ReadOptionalBooleanSetting(JsonElement root, string section, string name, string settingsPath, bool defaultValue)
+        {
+            JsonElement sectionElement;
+            if (!root.TryGetProperty(section, out sectionElement))
+                return defaultValue;
+            if (sectionElement.ValueKind != JsonValueKind.Object)
+                throw new InvalidDataException($"Cấu hình '{section}' trong {settingsPath} phải là một đối tượng.");
+
+            JsonElement valueElement;
+            if (!sectionElement.TryGetProperty(name, out valueElement))
+                return defaultValue;
+            if (valueElement.ValueKind == JsonValueKind.True) return true;
+            if (valueElement.ValueKind == JsonValueKind.False) return false;
+            throw new InvalidDataException($"Cấu hình '{section}:{name}' trong {settingsPath} phải là boolean true hoặc false.");
         }
 
         //Đăng nhập -> màn hình chính; đăng xuất thì quay lại màn hình đăng nhập

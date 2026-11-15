@@ -136,7 +136,13 @@ namespace Nhom3_NoSQL.Database
             return _ctx.Users.Find(u => u.Email == normalized).FirstOrDefaultAsync();
         }
 
+        public Task<List<AppUser>> GetAllAsync() =>
+            _ctx.Users.Find(FilterDefinition<AppUser>.Empty).SortBy(u => u.Email).ToListAsync();
+
         public Task InsertAsync(AppUser user) => _ctx.Users.InsertOneAsync(user);
+
+        public Task UpdateAsync(AppUser user) =>
+            _ctx.Users.ReplaceOneAsync(u => u.Id == user.Id, user);
 
         public Task<long> CountAsync() => _ctx.Users.CountDocumentsAsync(FilterDefinition<AppUser>.Empty);
     }

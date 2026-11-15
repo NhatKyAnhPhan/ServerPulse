@@ -4,6 +4,7 @@
 > Môi trường: Windows 11, MongoDB 8.3, .NET Framework 4.7.2, cửa sổ 1440×900.
 > Dữ liệu: dữ liệu mẫu do `DemoDataSeeder` tạo (10 host, 7 ngày metric, 8 quy tắc ngưỡng, 6 sự cố) và 2 tài khoản Admin / Viewer.
 > Bộ kiểm thử tự động viết bằng **C#**: project `Nhom3_NoSQL.Tests` (file `Program.cs`). Kết quả lần chạy gần nhất: `Nhom3_NoSQL.Tests/ket_qua_kiem_thu.txt`.
+> Xác minh 15/11/2026: 2 test P1 mới chạy PASS; 47 test tự động hiện có và test giao diện thủ công chưa chạy lại vì API đang hoạt động trên cổng 5080, tránh ghi test vào database người dùng.
 
 ## Tổng hợp kết quả
 
@@ -14,15 +15,26 @@
 | Test hiển thị Alert (API) | 6 | 6 | 0 | Tự động (C#) |
 | Test logic giao diện (kiểm tra dữ liệu nhập, định dạng, CSV, font) | 9 | 9 | 0 | Tự động (C#) |
 | Test giao diện WinForms (mở form thật, gọi API thật) | 9 | 9 | 0 | Tự động (C#) |
-| **Tổng tự động** | **47** | **47** | **0** | |
+| Kiểm thử chế độ Real / Collector (MongoDB, ổ đĩa) | 2 | 2 | 0 | Tự động (C#) |
+| **Tổng tự động** | **49** | **49** | **0** | |
 | Test thủ công giao diện (chạy trên app thật) | 12 | 12 | 0 | Thao tác chuột/bàn phím thật trên app (mục 6) |
-| **Tổng cộng** | **59** | **59** | **0** | |
+| **Tổng cộng** | **61** | **61** | **0** | |
 
 **Cách chạy lại:** chạy app (F5) hoặc `Nhom3_NoSQL.exe --headless`, sau đó:
-- 47 test tự động: chạy project `Nhom3_NoSQL.Tests` (hoặc `Nhom3_NoSQL.Tests.exe [http://localhost:5080]`).
+- 49 test tự động: chạy project `Nhom3_NoSQL.Tests` (hoặc `Nhom3_NoSQL.Tests.exe [http://localhost:5080]`).
+- Chỉ chạy 2 test P1 không cần API đang chạy: `Nhom3_NoSQL.Tests.exe --p1-only` (cần MongoDB khả dụng).
 - 6 test thủ công TC-MAN-07..12: `Nhom3_NoSQL.Tests.exe --thu-cong` (VS Code: cấu hình số 5). Chương trình mở form thật và **dùng chuột/bàn phím thật của Windows** để thao tác; trong lúc chạy (~1 phút) không dùng chuột. Ảnh bằng chứng + kết quả lưu ở `Docs/screenshots/kiem_thu_thu_cong/`.
 
 Chương trình in PASS/FAIL từng test case, tổng kết, và trả mã thoát 0 khi tất cả PASS. Mọi exception phát sinh khi vẽ giao diện trong lúc chạy test cũng làm test đó FAIL.
+
+---
+
+## 0. Kiểm thử dữ liệu thật
+
+| Mã TC | Mục tiêu | Các bước | Kết quả mong đợi |
+|---|---|---|---|
+| TC-REAL-01 | Không nạp dữ liệu giả trong chế độ Real | Chạy seeder với `includeDemoData=false` trên database tạm | Chỉ có host máy hiện tại; không có metric, ngưỡng, sự cố hoặc event mẫu |
+| TC-REAL-02 | Chọn ổ đĩa thu thập | Gọi collector với tên ổ đĩa đã chọn | Phần trăm disk khớp dung lượng của ổ được truyền vào |
 
 ---
 

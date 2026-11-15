@@ -40,6 +40,7 @@ namespace Nhom3_NoSQL.Backend.Api
         private readonly IMetricRepository _metrics;
         private readonly IAlertRepository _alerts;
         private readonly IEventRepository _events;
+        private readonly IUserRepository _users;
         private readonly AuthService _auth;
         private readonly AlertEngineService _engine;
 
@@ -54,6 +55,7 @@ namespace Nhom3_NoSQL.Backend.Api
             _metrics = metrics;
             _alerts = alerts;
             _events = events;
+            _users = new MongoUserRepository(ctx);
             _auth = auth;
             _engine = engine;
             _listener.Prefixes.Add(url);
@@ -123,6 +125,16 @@ namespace Nhom3_NoSQL.Backend.Api
                 case "auth":
                     if (M(1) == "me") return r.User;
                     if (M(1) == "logout" && r.Method == "POST") { _auth.Logout(BearerToken(r)); return new OkDto { Ok = true }; }
+                    if (M(1) == "password" && r.Method == "POST") return await ChangeOwnPasswordAsync(r);
+                    break;
+                case "users":
+                    if (M(1) == null && r.Method == "GET") { RequireAdmin(r); return await GetUsersAsync(); }
+                    if (M(1) == null && r.Method == "POST") { RequireAdmin(r); return await CreateUserAsync(r); }
+                    if (M(1) != null && M(2) == "password" && r.Method == "PUT")
+                    {
+                        RequireAdmin(r);
+                        return await ResetUserPasswordAsync(r, Uri.UnescapeDataString(M(1)));
+                    }
                     break;
                 case "overview":
                     return await OverviewAsync();
@@ -177,6 +189,70 @@ namespace Nhom3_NoSQL.Backend.Api
         {
             if (r.User.Role != UserRole.Admin) throw new ApiException(403, "Chỉ Quản trị viên (Admin) được thực hiện thao tác này");
         }
+
+        async Task<object> ChangeOwnPasswordAsync(Req r)
+        {
+            var body = ReadBody<ChangePasswordBody>(r) ?? throw new ApiException(400, "Thiếu dữ liệu");
+            var validation = AuthService.ValidateNewPassword(body.NewPassword);
+            if (validation != null) throw new ApiException(400, validation);
+            var user = await _users.GetByEmailAsync(r.User.Email);
+            if (!AuthService.Verify(user, body.CurrentPassword))
+                throw new ApiException(400, "Mật khẩu hiện tại không đúng.");
+
+            await _auth.ChangePasswordAsync(user.Email, body.NewPassword);
+            await _events.InsertAsync(new EventLog { Type = "AUTH", Level = "INFO", Actor = user.Email, Message = $"{user.Email} đổi mật khẩu" });
+            return new OkDto { Ok = true };
+        }
+
+        async Task<List<UserAccountDto>> GetUsersAsync()
+        {
+            return (await _users.GetAllAsync()).Select(ToUserAccount).ToList();
+        }
+
+        async Task<object> CreateUserAsync(Req r)
+        {
+            var body = ReadBody<CreateUserBody>(r) ?? throw new ApiException(400, "Thiếu dữ liệu");
+            var email = (body.Email ?? "").Trim().ToLowerInvariant();
+            if (!Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
+                throw new ApiException(400, "Email không hợp lệ.");
+            if (string.IsNullOrWhiteSpace(body.FullName))
+                throw new ApiException(400, "Họ tên không được để trống.");
+            var role = string.Equals(body.Role, UserRole.Admin, StringComparison.OrdinalIgnoreCase) ? UserRole.Admin
+                : string.Equals(body.Role, UserRole.Viewer, StringComparison.OrdinalIgnoreCase) ? UserRole.Viewer : null;
+            if (role == null) throw new ApiException(400, "Role chỉ nhận Admin hoặc Viewer.");
+            var validation = AuthService.ValidateNewPassword(body.Password);
+            if (validation != null) throw new ApiException(400, validation);
+            if (await _users.GetByEmailAsync(email) != null)
+                throw new ApiException(409, "Email đã được sử dụng.");
+
+            var user = AuthService.CreateUser(email, body.FullName.Trim(), role, body.Password);
+            try { await _users.InsertAsync(user); }
+            catch (MongoWriteException ex) when (ex.WriteError != null && ex.WriteError.Category == ServerErrorCategory.DuplicateKey)
+            {
+                throw new ApiException(409, "Email đã được sử dụng.");
+            }
+            await _events.InsertAsync(new EventLog { Type = "AUTH", Level = "INFO", Actor = r.User.Email, Message = $"{r.User.Email} tạo tài khoản {email} ({role})" });
+            return ToUserAccount(user);
+        }
+
+        async Task<object> ResetUserPasswordAsync(Req r, string email)
+        {
+            var body = ReadBody<ResetPasswordBody>(r) ?? throw new ApiException(400, "Thiếu dữ liệu");
+            var validation = AuthService.ValidateNewPassword(body.Password);
+            if (validation != null) throw new ApiException(400, validation);
+            var user = await _users.GetByEmailAsync(email);
+            if (user == null) throw new ApiException(404, "Không tìm thấy tài khoản.");
+            await _auth.ChangePasswordAsync(user.Email, body.Password);
+            await _events.InsertAsync(new EventLog { Type = "AUTH", Level = "WARNING", Actor = r.User.Email, Message = $"{r.User.Email} đặt lại mật khẩu cho {user.Email}" });
+            return new OkDto { Ok = true };
+        }
+
+        static UserAccountDto ToUserAccount(AppUser user) => new UserAccountDto
+        {
+            Email = user.Email,
+            FullName = user.FullName,
+            Role = user.Role
+        };
 
         // ===================== HOSTS =====================
         async Task<List<HostView>> BuildHostViewsAsync(IEnumerable<ServerInfo> hosts, bool spark = false)

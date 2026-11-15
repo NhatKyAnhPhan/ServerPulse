@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Nhom3_NoSQL.Backend.Interfaces;
@@ -56,6 +57,16 @@ namespace Nhom3_NoSQL.Backend.Services
             return diff == 0;
         }
 
+        public static string ValidateNewPassword(string password)
+        {
+            if (string.IsNullOrEmpty(password) || password.Length < 12)
+                return "Mật khẩu mới phải có ít nhất 12 ký tự.";
+            if (!password.Any(char.IsLower) || !password.Any(char.IsUpper) ||
+                !password.Any(char.IsDigit) || !password.Any(c => !char.IsLetterOrDigit(c)))
+                return "Mật khẩu mới phải có chữ hoa, chữ thường, chữ số và ký tự đặc biệt.";
+            return null;
+        }
+
         public async Task<(string token, UserSession session)> LoginAsync(string email, string password)
         {
             var user = await _users.GetByEmailAsync(email ?? "");
@@ -73,6 +84,24 @@ namespace Nhom3_NoSQL.Backend.Services
             };
             _sessions[token] = session;
             return (token, session);
+        }
+
+        public async Task ChangePasswordAsync(string email, string password)
+        {
+            var user = await _users.GetByEmailAsync(email);
+            if (user == null) throw new InvalidOperationException("Không tìm thấy tài khoản.");
+            var replacement = CreateUser(user.Email, user.FullName, user.Role, password);
+            replacement.Id = user.Id;
+            await _users.UpdateAsync(replacement);
+            RevokeSessions(email);
+        }
+
+        public void RevokeSessions(string email)
+        {
+            var normalized = (email ?? "").Trim();
+            foreach (var entry in _sessions)
+                if (string.Equals(entry.Value.Email, normalized, StringComparison.OrdinalIgnoreCase))
+                    _sessions.TryRemove(entry.Key, out _);
         }
 
         public UserSession Validate(string token)
