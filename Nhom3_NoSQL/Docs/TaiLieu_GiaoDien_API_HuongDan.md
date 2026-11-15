@@ -109,10 +109,10 @@ Nút **Làm mới** trên thanh trên tải lại ngay; ngoài ra mọi trang t�
 ![Chi tiết máy chủ](screenshots/04_chi_tiet_may_chu.png)
 *Hình 4: Chi tiết hiệu năng máy chủ web-prod-01*
 
-- **Thẻ đầu trang:** hostname, nhãn trạng thái, mô tả · khu vực, IP, hệ điều hành, Host ID (dùng khi cấu hình Agent), last seen, heartbeat OK/LOST.
+- **Thẻ đầu trang:** hostname, nhãn trạng thái, mô tả · khu vực, IP, hệ điều hành, Host ID (dùng khi cấu hình Agent), last seen và trạng thái Agent CONNECTED/DISCONNECTED theo heartbeat.
 - **4 thẻ chỉ số hiện tại:** CPU (% / số vCPU), RAM (% / GB đã dùng), Disk (% / GB), Network (Mbps, chiều vào ↓ / ra ↑). Mỗi thẻ có dòng *Trong ngưỡng vận hành* / *Vượt ngưỡng warning* và mức biến động.
 - **Lịch sử hiệu năng:** 4 biểu đồ CPU, Memory, Disk, Network; nút chọn **1h / 6h / 24h / 7d**. Đường xám nét đứt là trung bình cả kỳ; phụ đề ghi Peak / Avg; rê chuột lên đường để xem tooltip giá trị.
-- Nút **← Máy chủ** quay lại danh sách, **Chỉnh sửa** (Admin) mở hộp thoại sửa.
+- Nút **← Máy chủ** quay lại danh sách, **Chỉnh sửa** (Admin) mở hộp thoại sửa. Nút **Cấp mã Agent** yêu cầu xác nhận trước khi cấp lại (mã cũ sẽ bị thu hồi); hộp thoại mã mới có nút **Sao chép**.
 
 ### 2.5. Cấu hình ngưỡng cảnh báo – `ThresholdsPage`
 
@@ -234,6 +234,7 @@ Admin tạo tài khoản từ **menu tài khoản → Quản lý tài khoản**.
 | GET | `/hosts?q=&status=&os=` | Đăng nhập | Danh sách `HostView`: host + `latest` (metric mới nhất) + `status` (ONLINE/WARNING/CRITICAL/OFFLINE) + `lastSeen` | `GetHostsAsync` |
 | GET | `/hosts/{id}` | Đăng nhập | Chi tiết một host | `GetHostAsync` |
 | POST | `/hosts` | Admin | Thêm host. Body `{ name*, ipAddress*, operatingSystem, region, description, cpuCores, ramTotalGb, diskTotalGb }` | `CreateHostAsync` |
+| POST | `/hosts/{id}/agent-token` | Admin | Cấp mã Agent ngẫu nhiên; chỉ trả mã rõ một lần, lần cấp lại thu hồi mã cũ | `IssueAgentTokenAsync` |
 | PUT | `/hosts/{id}` | Admin | Sửa host | `UpdateHostAsync` |
 | DELETE | `/hosts/{id}` | Admin | Xóa host + quy tắc riêng, đóng sự cố còn mở | `DeleteHostAsync` |
 
@@ -251,14 +252,14 @@ Ví dụ phản hồi `GET /hosts`:
 
 | Method | Endpoint | Quyền | Mô tả | Hàm ApiClient |
 |---|---|---|---|---|
-| POST | `/metrics/collector` | Agent (không cần token) | Body `CollectorBody { serverId*, cpu, ram, disk, networkInKbps, networkOutKbps }`. Kiểm tra Host ID tồn tại, CPU/RAM/Disk trong 0–100; ghi vào `metrics`; chạy Alert Engine | `CollectAsync` |
+| POST | `/metrics/collector` | Agent token riêng của host | Header `Authorization: Bearer <agent-token>` và body `CollectorBody { serverId*, cpu, ram, disk, networkInKbps, networkOutKbps }`. Token chỉ ghi được metric cho host đã cấp; kiểm tra CPU/RAM/Disk trong 0–100; ghi vào `metrics`; chạy Alert Engine | `CollectAsync` |
 | GET | `/metrics/history/{id}?range=1h\|6h\|24h\|7d` | Đăng nhập | `HistoryDto { points[{ t, cpu, ram, disk, netIn, netOut }], summary{ cpuPeak, cpuAvg, … } }` | `GetHistoryAsync` |
 | GET | `/metrics/latest/{id}` | Đăng nhập | Bản ghi metric mới nhất | — |
 | GET | `/overview` | Đăng nhập | `OverviewDto`: total, online, warning, critical, offline, avgCpu/Ram/Disk, totalNetMbps, healthScore, series, attention, recentAlerts | `GetOverviewAsync` |
 
-Ví dụ Agent gửi dữ liệu:
+Ví dụ Agent gửi dữ liệu qua HTTPS:
 ```bash
-curl -X POST http://localhost:5080/api/v1/metrics/collector -H "Content-Type: application/json" -d "{\"serverId\":\"<HOST_ID>\",\"cpu\":42.5,\"ram\":61,\"disk\":48,\"networkInKbps\":1200,\"networkOutKbps\":800}"
+curl -X POST https://<API_HOST>:5080/api/v1/metrics/collector -H "Authorization: Bearer <AGENT_TOKEN>" -H "Content-Type: application/json" -d "{\"serverId\":\"<HOST_ID>\",\"cpu\":42.5,\"ram\":61,\"disk\":48,\"networkInKbps\":1200,\"networkOutKbps\":800}"
 ```
 
 ### 6.4. Alert (cảnh báo / sự cố)
@@ -324,9 +325,45 @@ curl -X POST http://localhost:5080/api/v1/metrics/collector -H "Content-Type: ap
 |---|---|
 | *(không có)* | Chạy đầy đủ: API + Collector + giao diện |
 | `--headless` | Chỉ chạy API + Collector trên máy hiện tại, không mở giao diện (dùng khi chạy kiểm thử); dừng bằng Task Manager |
+| `--agent` | Chỉ thu thập và gửi metric máy hiện tại tới `Api:BaseUrl`; cần `Agent:ServerId` và biến môi trường `SERVERPULSE_AGENT_TOKEN` |
 | `--screenshots <thư mục>` | Tự mở lần lượt các màn hình và lưu ảnh PNG vào thư mục (dùng để lấy hình cho báo cáo) |
 
-> **Agent từ máy khác chưa sẵn sàng cho triển khai mạng:** API hiện chỉ bind `localhost`; endpoint nhận metric chưa yêu cầu xác thực Agent và kết nối đang dùng HTTP. Không đổi API sang địa chỉ mạng hoặc chuyển tiếp cổng trước khi bổ sung xác thực Agent và HTTPS.
+### 7.1.2. Kết nối máy khác trong LAN/VPN riêng
+
+Mô hình khuyến nghị: một máy Windows làm **Server** (chạy API và MongoDB); các máy được theo dõi chạy **Agent**; máy của người xem dùng **Client**. MongoDB vẫn chỉ truy cập trên máy Server. Không chuyển tiếp cổng từ router ra Internet.
+
+1. Trên máy Server, cài chứng thư TLS có tên DNS khớp địa chỉ mà các máy khác sẽ dùng, lưu trong `Local Computer\Personal`. Với LAN thử nghiệm không có CA nội bộ, có thể tạo chứng thư tự ký bằng PowerShell chạy với quyền Administrator:
+
+   ```powershell
+   $dnsName = $env:COMPUTERNAME
+   $cert = New-SelfSignedCertificate -DnsName $dnsName -CertStoreLocation Cert:\LocalMachine\My -Type SSLServerAuthentication -KeyAlgorithm RSA -KeyLength 3072 -NotAfter (Get-Date).AddYears(2)
+   Export-Certificate -Cert $cert -FilePath "$PWD\serverpulse.cer" | Out-Null
+   netsh http add sslcert ipport=0.0.0.0:5080 certhash=$($cert.Thumbprint) appid="{2B1D4F2D-8F8C-4740-8386-25EF73DA3E84}"
+   netsh http add urlacl url=https://+:5080/ user="$env:USERDOMAIN\$env:USERNAME"
+   ```
+
+   Sao chép riêng file public `serverpulse.cer` tới máy Client/Agent và nhập vào `Local Computer\Trusted Root Certification Authorities` bằng `Import-Certificate -FilePath .\serverpulse.cer -CertStoreLocation Cert:\LocalMachine\Root`. Dùng `https://<TEN_MAY_SERVER>:5080` (tên DNS phải trùng `$dnsName`). Môi trường thật nên dùng cert từ CA được tổ chức tin cậy; không chia sẻ private key hoặc tắt kiểm tra chứng thư TLS.
+2. Sửa `Frontend/appsettings.json` trên Server:
+
+   ```json
+   "Api": {
+     "ListenUrl": "https://+:5080/",
+     "BaseUrl": "https://<TEN_DNS_CUA_SERVER>:5080"
+   }
+   ```
+
+   Giữ `App:Role` là `Server`. Chọn `App:Mode` là `Real` và một database riêng nếu không muốn dữ liệu demo. Mở Windows Firewall chỉ cho profile Private và subnet/máy của nhóm (ví dụ `New-NetFirewallRule -DisplayName "ServerPulse HTTPS" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5080 -RemoteAddress "192.168.1.0/24" -Profile Private`); thay subnet bằng địa chỉ LAN thực tế. Không mở MongoDB (`27017`) ra LAN. Nếu dùng cert/binding hoặc listener URL khác, thay cổng và hostname tương ứng.
+3. Trên máy cần mở giao diện, cài ứng dụng và đặt `App:Role` thành `Client`, `Api:BaseUrl` thành cùng URL HTTPS ở trên. Client không cần MongoDB. Chạy ứng dụng rồi đăng nhập bằng tài khoản đã tạo trên Server.
+4. Trên Server, thêm từng máy ở **Máy chủ** → **Thêm máy chủ**, mở chi tiết host và bấm **Cấp mã Agent**. Xác nhận trước khi cấp mã (cấp lại sẽ thu hồi mã cũ); mã chỉ hiển thị một lần và có thể sao chép bằng nút **Sao chép**.
+5. Trên mỗi máy Windows cần theo dõi, cấu hình `Api:BaseUrl` trỏ tới URL HTTPS trung tâm, `Agent:ServerId` bằng Host ID tương ứng và `Collector:DiskDrive` thành ổ đĩa cần đo. Đặt biến môi trường người dùng `SERVERPULSE_AGENT_TOKEN` bằng mã vừa cấp, rồi chạy:
+
+   ```powershell
+   .\Nhom3_NoSQL.exe --agent
+   ```
+
+   Agent gửi CPU/RAM/Disk/Network mỗi `Agent:IntervalSeconds` giây (mặc định 5). Metric được lưu vào hàng đợi cục bộ trước khi gửi; khi API lỗi Agent thử lại với backoff tăng dần (tối đa 30 giây), không bỏ các mẫu đang chờ và tiếp tục gửi sau khi chạy lại. Hàng đợi nằm trong `%LOCALAPPDATA%\ServerPulse\queue`; log Agent ở `%LOCALAPPDATA%\ServerPulse\logs\agent-error.log` được xoay vòng ở 1 MB (giữ một file `.1`). Trạng thái kết nối Agent hiển thị ở chi tiết host và dựa trên heartbeat nhận được.
+
+Máy Client/Agent chỉ chấp nhận URL HTTP khi host là loopback; kết nối từ xa qua HTTP bị từ chối. Collector kiểm tra token riêng và host đích; chỉ lưu hash token trong MongoDB. Nếu hai máy không cùng LAN, trước tiên kết nối chúng bằng VPN riêng có kiểm soát truy cập, sau đó vẫn dùng HTTPS. Không gửi token qua chat công khai và không commit token vào cấu hình/source control.
 
 ### 7.2. Các thao tác chính
 

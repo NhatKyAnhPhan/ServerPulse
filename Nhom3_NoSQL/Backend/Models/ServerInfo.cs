@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
+using System.Text.Json.Serialization;
 
 namespace Nhom3_NoSQL.Backend.Models
 {
@@ -23,5 +24,8 @@ namespace Nhom3_NoSQL.Backend.Models
         public double DiskTotalGb { get; set; }
         public bool IsActive { get; set; } = true;
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        [JsonIgnore]
+        public string AgentTokenHash { get; set; }
     }
 }

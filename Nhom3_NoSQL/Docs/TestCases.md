@@ -49,8 +49,8 @@ Chương trình in PASS/FAIL từng test case, tổng kết, và trả mã thoá
 | TC-API-05 | ID không hợp lệ | `GET /hosts/abc`; `GET /hosts/000000000000000000000000` | 400; 404 | PASS |
 | TC-API-06 | Thêm / chống trùng / sửa host | `POST /hosts` (test-api-host, 10.99.0.1) → POST lại cùng tên → `PUT` sửa mô tả | Có Id → 409 → mô tả đã đổi | PASS |
 | TC-API-07 | Kiểm tra dữ liệu host | Tên rỗng; IP `999.1.1` | 400; 400 | PASS |
-| TC-API-08 | Agent gửi metric | `POST /metrics/collector` `{serverId, cpu:12.5, ram:40, disk:30}` (không token) | Host chuyển ONLINE, `latest.cpu = 12.5` | PASS |
-| TC-API-09 | Collector kiểm tra dữ liệu | Host ID không tồn tại; `cpu: 150` | 404; 400 | PASS |
+| TC-API-08 | Agent token riêng cho host | Không token/sai token; Viewer cấp token; token host A gửi cho host B; Admin cấp token đúng | 401; 403; 401; host chuyển ONLINE | PASS |
+| TC-API-09 | Collector kiểm tra dữ liệu | Host ID không hợp lệ; `cpu: 150` với token đúng | 401; 400 | PASS |
 | TC-API-10 | Lịch sử metric | `GET /metrics/history/{id}?range=1h/6h/24h/7d` | Có điểm, ≤ 125 điểm, `cpuPeak ≥ cpuAvg` | PASS |
 | TC-API-11 | Số liệu Dashboard (Aggregation) | `GET /overview` | `total = online + offline`, `series` ≥ 30 điểm (6 giờ / 10 phút), `avgCpu` ∈ [0,100] | PASS |
 | TC-API-12 | Event Log | `GET /events?q=test-api-host`; `?type=AUTH` | Có sự kiện của host test; chỉ trả loại AUTH | PASS |

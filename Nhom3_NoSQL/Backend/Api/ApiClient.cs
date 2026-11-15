@@ -84,6 +84,9 @@ namespace Nhom3_NoSQL.Backend.Api
 
         public Task DeleteHostAsync(string id) => SendAsync<OkDto>(HttpMethod.Delete, "hosts/" + id);
 
+        public Task<AgentTokenResponse> IssueAgentTokenAsync(string id) =>
+            SendAsync<AgentTokenResponse>(HttpMethod.Post, "hosts/" + id + "/agent-token");
+
         // ---------------- Metrics ----------------
         public Task<OverviewDto> GetOverviewAsync() => SendAsync<OverviewDto>(HttpMethod.Get, "overview");
 
@@ -91,6 +94,9 @@ namespace Nhom3_NoSQL.Backend.Api
             SendAsync<HistoryDto>(HttpMethod.Get, $"metrics/history/{hostId}" + Query(("range", range)));
 
         public Task<OkDto> CollectAsync(CollectorBody body) => SendAsync<OkDto>(HttpMethod.Post, "metrics/collector", body);
+
+        public Task<OkDto> CollectAsync(CollectorBody body, string agentToken) =>
+            SendAsync<OkDto>(HttpMethod.Post, "metrics/collector", body, agentToken, true);
 
         // ---------------- Alert ----------------
         public Task<AlertsDto> GetAlertsAsync(string status = null, string severity = null, string q = null, int hours = 24) =>
@@ -119,11 +125,13 @@ namespace Nhom3_NoSQL.Backend.Api
             return parts.Count == 0 ? "" : "?" + string.Join("&", parts);
         }
 
-        async Task<T> SendAsync<T>(HttpMethod method, string path, object body = null)
+        async Task<T> SendAsync<T>(HttpMethod method, string path, object body = null, string bearerToken = null, bool overrideBearerToken = false)
         {
             using (var req = new HttpRequestMessage(method, path))
             {
-                if (Token != null) req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Token);
+                var authorizationToken = overrideBearerToken ? bearerToken : Token;
+                if (!string.IsNullOrEmpty(authorizationToken))
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", authorizationToken);
                 if (body != null) req.Content = new StringContent(JsonSerializer.Serialize(body, ApiJson.Options), Encoding.UTF8, "application/json");
 
                 HttpResponseMessage res;

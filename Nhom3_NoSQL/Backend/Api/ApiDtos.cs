@@ -23,6 +23,7 @@ namespace Nhom3_NoSQL.Backend.Api
 
     public class LoginBody { public string Email { get; set; } public string Password { get; set; } }
     public class LoginResponse { public string Token { get; set; } public UserSession User { get; set; } }
+    public class AgentTokenResponse { public string Token { get; set; } }
     public class ChangePasswordBody { public string CurrentPassword { get; set; } public string NewPassword { get; set; } }
     public class CreateUserBody { public string Email { get; set; } public string FullName { get; set; } public string Role { get; set; } public string Password { get; set; } }
     public class ResetPasswordBody { public string Password { get; set; } }

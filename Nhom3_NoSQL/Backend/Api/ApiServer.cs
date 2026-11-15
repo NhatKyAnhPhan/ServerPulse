@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -82,6 +83,9 @@ namespace Nhom3_NoSQL.Backend.Api
         {
             try
             {
+                if (!c.Request.IsLocal && !c.Request.IsSecureConnection)
+                    throw new ApiException(400, "Kết nối từ xa bắt buộc dùng HTTPS");
+
                 var path = c.Request.Url.AbsolutePath;
                 if (!path.StartsWith("/api/v1/", StringComparison.OrdinalIgnoreCase))
                 {
@@ -142,6 +146,11 @@ namespace Nhom3_NoSQL.Backend.Api
                     if (M(1) == null && r.Method == "GET") return await HostsAsync(r);
                     if (M(1) == null && r.Method == "POST") { RequireAdmin(r); return await CreateHostAsync(r); }
                     if (M(1) != null && M(2) == null && r.Method == "GET") return await HostDetailAsync(M(1));
+                    if (M(1) != null && M(2) == "agent-token" && r.Method == "POST")
+                    {
+                        RequireAdmin(r);
+                        return await IssueAgentTokenAsync(r, M(1));
+                    }
                     if (M(1) != null && r.Method == "PUT") { RequireAdmin(r); return await UpdateHostAsync(r, M(1)); }
                     if (M(1) != null && r.Method == "DELETE") { RequireAdmin(r); return await DeleteHostAsync(r, M(1)); }
                     break;
@@ -334,6 +343,7 @@ namespace Nhom3_NoSQL.Backend.Api
             ValidateHost(h);
             h.Id = old.Id;
             h.CreatedAt = old.CreatedAt;
+            h.AgentTokenHash = old.AgentTokenHash;
             await _servers.UpdateAsync(h);
             await LogAsync(r, h, "HOST", "INFO", $"Cập nhật máy chủ {h.Name}");
             return h;
@@ -353,11 +363,31 @@ namespace Nhom3_NoSQL.Backend.Api
         }
 
         // ===================== METRICS =====================
-        //POST /api/v1/metrics/collector - Agent gửi dữ liệu về, xác thực Host ID rồi ghi vào metrics + chạy Alert Engine
+        async Task<object> IssueAgentTokenAsync(Req r, string id)
+        {
+            var host = await _servers.GetByIdAsync(CheckId(id)) ?? throw new ApiException(404, "Không tìm thấy máy chủ");
+            var bytes = new byte[32];
+            using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(bytes);
+            var token = Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            var hash = HashAgentToken(token);
+            await _ctx.Servers.UpdateOneAsync(s => s.Id == host.Id, Builders<ServerInfo>.Update.Set(s => s.AgentTokenHash, hash));
+            await LogAsync(r, host, "HOST", "WARNING", $"Cấp mới mã Agent cho {host.Name}");
+            return new AgentTokenResponse { Token = token };
+        }
+
+        //POST /api/v1/metrics/collector - Agent chỉ được ghi metric cho host đã cấp token riêng.
         async Task<object> CollectAsync(Req r)
         {
             var b = ReadBody<CollectorBody>(r) ?? throw new ApiException(400, "Thiếu dữ liệu");
-            var host = await _servers.GetByIdAsync(CheckId(b.ServerId)) ?? throw new ApiException(404, "Host ID không tồn tại");
+            var token = BearerToken(r);
+            if (string.IsNullOrEmpty(token)) throw new ApiException(401, "Mã Agent hoặc Host ID không hợp lệ");
+            ServerInfo host;
+            try { host = await _servers.GetByIdAsync(CheckId(b.ServerId)); }
+            catch (ApiException) { throw new ApiException(401, "Mã Agent hoặc Host ID không hợp lệ"); }
+            if (host == null) throw new ApiException(401, "Mã Agent hoặc Host ID không hợp lệ");
+            var suppliedHash = HashAgentToken(token);
+            if (string.IsNullOrEmpty(host.AgentTokenHash) || !FixedTimeEquals(host.AgentTokenHash, suppliedHash))
+                throw new ApiException(401, "Mã Agent hoặc Host ID không hợp lệ");
             foreach (var v in new[] { b.Cpu, b.Ram, b.Disk })
                 if (v < 0 || v > 100) throw new ApiException(400, "CPU/RAM/Disk phải trong khoảng 0-100");
             var s = new MetricSnapshot
@@ -369,6 +399,20 @@ namespace Nhom3_NoSQL.Backend.Api
             await _metrics.InsertAsync(s);
             await _engine.EvaluateAsync(s, host.Name);
             return new OkDto { Ok = true, Id = s.Id };
+        }
+
+        static string HashAgentToken(string token)
+        {
+            using (var sha = SHA256.Create())
+                return Convert.ToBase64String(sha.ComputeHash(Encoding.UTF8.GetBytes(token ?? "")));
+        }
+
+        static bool FixedTimeEquals(string left, string right)
+        {
+            if (left == null || right == null || left.Length != right.Length) return false;
+            var mismatch = 0;
+            for (var i = 0; i < left.Length; i++) mismatch |= left[i] ^ right[i];
+            return mismatch == 0;
         }
 
         static TimeSpan ParseRange(string range)

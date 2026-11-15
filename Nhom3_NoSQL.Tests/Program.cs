@@ -49,6 +49,7 @@ namespace Nhom3_NoSQL.Tests
             Register();
             if (args.Contains("--p1-only")) return RunP1Only().GetAwaiter().GetResult();
             if (args.Contains("--p2-focused")) return RunSelected(Cases.Where(c => c.Code == "TC-AUTH-11" || c.Code == "TC-NOTIFY-01" || c.Code == "TC-USER-API-01")).GetAwaiter().GetResult();
+            if (args.Contains("--agent-outbox-only")) return RunSelected(Cases.Where(c => c.Code == "TC-AGENT-OUTBOX-01")).GetAwaiter().GetResult();
 
             // Chạy trong vòng lặp thông điệp WinForms để kiểm thử được cả giao diện
             int exit = 1;
@@ -119,6 +120,7 @@ namespace Nhom3_NoSQL.Tests
 
             // dọn host test còn sót từ lần chạy trước
             foreach (var v in await Admin.GetHostsAsync("test-api-host")) await Admin.DeleteHostAsync(v.Host.Id);
+            foreach (var v in await Admin.GetHostsAsync("test-other-agent-host")) await Admin.DeleteHostAsync(v.Host.Id);
 
             foreach (var c in Cases)
             {
@@ -245,7 +247,7 @@ namespace Nhom3_NoSQL.Tests
                 var drive = DriveInfo.GetDrives().FirstOrDefault(d => d.IsReady);
                 Assert(drive != null, "không tìm thấy ổ đĩa sẵn sàng để kiểm thử");
                 var expected = (double)(drive.TotalSize - drive.AvailableFreeSpace) / drive.TotalSize * 100;
-                var actual = MetricCollectorService.GetDiskUsagePercent(drive.Name);
+                var actual = LocalMetricSampler.GetDiskUsagePercent(drive.Name);
                 Assert(Math.Abs(actual - expected) < 0.001, "tỷ lệ sử dụng không khớp ổ đĩa được chọn");
                 return Task.CompletedTask;
             });
@@ -333,23 +335,38 @@ namespace Nhom3_NoSQL.Tests
                 h.Description = "đã sửa";
                 Assert((await Admin.UpdateHostAsync(h)).Description == "đã sửa", "sửa không lưu");
                 Ctx["tmpHost"] = h.Id;
+                Ctx["tmpAgentToken"] = (await Admin.IssueAgentTokenAsync(h.Id)).Token;
             });
             T(API, "TC-API-07", "Thêm host thiếu tên / IP sai -> 400", async () =>
             {
                 await ExpectStatus(400, () => Admin.CreateHostAsync(new ServerInfo { Name = "", IpAddress = "10.0.0.1" }));
                 await ExpectStatus(400, () => Admin.CreateHostAsync(new ServerInfo { Name = "abc", IpAddress = "999.1.1" }));
             });
-            T(API, "TC-API-08", "POST /metrics/collector nhận dữ liệu Agent (không cần token)", async () =>
+            T(API, "TC-API-08", "Agent phải có token riêng do Admin cấp cho đúng host", async () =>
             {
-                var r = await Anon.CollectAsync(new CollectorBody { ServerId = Ctx["tmpHost"], Cpu = 12.5, Ram = 40, Disk = 30, NetworkInKbps = 1000, NetworkOutKbps = 500 });
+                var body = new CollectorBody { ServerId = Ctx["tmpHost"], Cpu = 12.5, Ram = 40, Disk = 30, NetworkInKbps = 1000, NetworkOutKbps = 500 };
+                await ExpectStatus(401, () => Anon.CollectAsync(body));
+                await ExpectStatus(401, () => Anon.CollectAsync(body, "invalid-agent-token"));
+                await ExpectStatus(403, () => Viewer.IssueAgentTokenAsync(Ctx["tmpHost"]));
+                var h = await Admin.GetHostAsync(Ctx["tmpHost"]);
+                Assert(!System.Text.Json.JsonSerializer.Serialize(h.Host, ApiJson.Options).Contains("AgentTokenHash"), "API làm lộ hash token Agent");
+                await Admin.UpdateHostAsync(h.Host);
+                var previousToken = Ctx["tmpAgentToken"];
+                Ctx["tmpAgentToken"] = (await Admin.IssueAgentTokenAsync(Ctx["tmpHost"])).Token;
+                await ExpectStatus(401, () => Anon.CollectAsync(body, previousToken));
+                var r = await Anon.CollectAsync(body, Ctx["tmpAgentToken"]);
+                var other = await Admin.CreateHostAsync(new ServerInfo { Name = "test-other-agent-host", IpAddress = "10.99.0.2" });
+                await Admin.IssueAgentTokenAsync(other.Id);
+                await ExpectStatus(401, () => Anon.CollectAsync(new CollectorBody { ServerId = other.Id, Cpu = 1, Ram = 1, Disk = 1 }, Ctx["tmpAgentToken"]));
+                await Admin.DeleteHostAsync(other.Id);
                 Assert(r.Ok, "ok=false");
                 var v = await Admin.GetHostAsync(Ctx["tmpHost"]);
                 Assert(v.Status == "ONLINE" && v.Latest.CpuUsagePercent == 12.5, $"status={v.Status}, cpu={v.Latest?.CpuUsagePercent}");
             });
-            T(API, "TC-API-09", "Collector: Host ID không tồn tại -> 404, giá trị % > 100 -> 400", async () =>
+            T(API, "TC-API-09", "Collector: Host ID sai -> 401, giá trị % > 100 -> 400", async () =>
             {
-                await ExpectStatus(404, () => Anon.CollectAsync(new CollectorBody { ServerId = "000000000000000000000000", Cpu = 1, Ram = 1, Disk = 1 }));
-                await ExpectStatus(400, () => Anon.CollectAsync(new CollectorBody { ServerId = Ctx["tmpHost"], Cpu = 150, Ram = 1, Disk = 1 }));
+                await ExpectStatus(401, () => Anon.CollectAsync(new CollectorBody { ServerId = "000000000000000000000000", Cpu = 1, Ram = 1, Disk = 1 }, Ctx["tmpAgentToken"]));
+                await ExpectStatus(400, () => Anon.CollectAsync(new CollectorBody { ServerId = Ctx["tmpHost"], Cpu = 150, Ram = 1, Disk = 1 }, Ctx["tmpAgentToken"]));
             });
             T(API, "TC-API-10", "GET /metrics/history/{id} 1h/6h/24h/7d có points + summary", async () =>
             {
@@ -382,8 +399,8 @@ namespace Nhom3_NoSQL.Tests
             T(ALERT, "TC-ALERT-03", "Alert Engine tự tạo cảnh báo khi Agent gửi CPU vượt ngưỡng, không tạo trùng", async () =>
             {
                 await Admin.SaveThresholdAsync(new AlertRule { ServerId = Ctx["tmpHost"], Metric = MetricType.Cpu, Unit = "%", ThresholdValue = 50, CriticalValue = 90, DurationSeconds = 0, IsEnabled = true });
-                await Anon.CollectAsync(new CollectorBody { ServerId = Ctx["tmpHost"], Cpu = 95, Ram = 10, Disk = 10 });
-                await Anon.CollectAsync(new CollectorBody { ServerId = Ctx["tmpHost"], Cpu = 96, Ram = 10, Disk = 10 });
+                await Anon.CollectAsync(new CollectorBody { ServerId = Ctx["tmpHost"], Cpu = 95, Ram = 10, Disk = 10 }, Ctx["tmpAgentToken"]);
+                await Anon.CollectAsync(new CollectorBody { ServerId = Ctx["tmpHost"], Cpu = 96, Ram = 10, Disk = 10 }, Ctx["tmpAgentToken"]);
                 var mine = (await Admin.GetAlertsAsync(q: "test-api-host")).Items.Where(a => a.ServerId == Ctx["tmpHost"] && a.Metric == MetricType.Cpu).ToList();
                 Assert(mine.Count == 1, "số alert = " + mine.Count);
                 Assert(mine[0].Severity == AlertSeverity.Critical && mine[0].Status == AlertStatus.Opening, $"{mine[0].Severity}/{mine[0].Status}");
@@ -445,6 +462,33 @@ namespace Nhom3_NoSQL.Tests
             {
                 Assert(Theme.StatusColor("ONLINE") == Theme.Green && Theme.StatusColor("CRITICAL") == Theme.Red && Theme.StatusColor("ACKNOWLEDGED") == Theme.Amber && Theme.StatusColor("OFFLINE") == Theme.Gray, "màu trạng thái sai");
                 Assert(Theme.LevelColor(95, 80, 90) == Theme.Red && Theme.LevelColor(85, 80, 90) == Theme.Amber && Theme.LevelColor(50, 80, 90) == Theme.Text, "màu ngưỡng sai");
+                return Task.CompletedTask;
+            });
+            T(UILOGIC, "TC-AGENT-OUTBOX-01", "Hàng đợi metric Agent giữ thứ tự sau khi khởi động lại", () =>
+            {
+                var path = Path.Combine(Path.GetTempPath(), "ServerPulseAgentOutbox-" + Guid.NewGuid().ToString("N") + ".json");
+                try
+                {
+                    var first = new MetricSnapshot { ServerId = "host", CpuUsagePercent = 10 };
+                    var second = new MetricSnapshot { ServerId = "host", CpuUsagePercent = 20 };
+                    var queue = new AgentMetricOutbox(path);
+                    queue.Enqueue(first);
+                    queue.Enqueue(second);
+
+                    queue = new AgentMetricOutbox(path);
+                    MetricSnapshot current;
+                    Assert(queue.TryPeek(out current) && current.CpuUsagePercent == 10, "metric đầu bị mất hoặc sai thứ tự");
+                    queue.RemoveHead();
+
+                    queue = new AgentMetricOutbox(path);
+                    Assert(queue.TryPeek(out current) && current.CpuUsagePercent == 20, "metric kế tiếp bị mất sau khi xác nhận");
+                    queue.RemoveHead();
+                    Assert(!queue.TryPeek(out current), "hàng đợi không rỗng sau khi xác nhận hết");
+                }
+                finally
+                {
+                    if (File.Exists(path)) File.Delete(path);
+                }
                 return Task.CompletedTask;
             });
             T(UILOGIC, "TC-UI-FONT-01", "Vẽ nhãn trạng thái / thanh tài nguyên không làm hỏng font dùng chung", () =>
@@ -528,7 +572,9 @@ namespace Nhom3_NoSQL.Tests
                     Assert(charts.Count == 4, "số biểu đồ " + charts.Count);
                     Assert(charts.All(c => c.Series[0].Points.Count > 10), "thiếu dữ liệu");
                     Assert(charts.Take(3).All(c => c.ChartAreas[0].AxisY.Maximum == 100), "trục Y sai");
-                    Assert(AllText(page).Contains("web-prod-01"), "không hiện tên host");
+                    var text = AllText(page);
+                    Assert(text.Contains("web-prod-01"), "không hiện tên host");
+                    Assert(text.Contains("AGENT") && (text.Contains("CONNECTED") || text.Contains("DISCONNECTED")), "không hiện trạng thái Agent");
                 }
             });
             T(UI, "TC-UI-ALERT-01", "Sự cố: danh sách khớp API, Viewer bị khóa nút Acknowledge/Resolve", async () =>
@@ -572,7 +618,7 @@ namespace Nhom3_NoSQL.Tests
             {
                 var tmp = Ctx["tmpHost"];
                 await Admin.SaveThresholdAsync(new AlertRule { ServerId = tmp, Metric = MetricType.Ram, Unit = "%", ThresholdValue = 50, CriticalValue = 90, DurationSeconds = 0, IsEnabled = true });
-                await Anon.CollectAsync(new CollectorBody { ServerId = tmp, Cpu = 10, Ram = 99, Disk = 10 });
+                await Anon.CollectAsync(new CollectorBody { ServerId = tmp, Cpu = 10, Ram = 99, Disk = 10 }, Ctx["tmpAgentToken"]);
                 var alert = (await Admin.GetAlertsAsync(AlertStatus.Opening, q: "test-api-host")).Items.First(a => a.ServerId == tmp && a.Metric == MetricType.Ram);
                 using (var main = await OpenMain(Admin))
                 {

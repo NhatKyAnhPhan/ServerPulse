@@ -1,10 +1,5 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.Net.NetworkInformation;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,43 +14,129 @@ namespace Nhom3_NoSQL.Backend.Services
         private readonly ICacheService _cache; // có thể null nếu không chạy Redis
         private readonly IMetricRepository _metricRepo;
         private readonly AlertEngineService _alertEngine;
-        private readonly PerformanceCounter _cpuCounter;
-        private readonly string _diskDrive;
-        private System.Threading.Timer _timer;
-        private long _lastRx, _lastTx;
-        private DateTime _lastNetAt;
+        private readonly LocalMetricSampler _sampler;
+        private readonly Func<MetricSnapshot, Task> _remoteSink;
+        private readonly Action<Exception> _onError;
+        private int _started;
+        private CancellationTokenSource _stop;
+        private Task _worker;
+        private AgentMetricOutbox _outbox;
 
         public MetricCollectorService(ICacheService cache, IMetricRepository metricRepo, AlertEngineService alertEngine, string diskDrive)
         {
             _cache = cache;
             _metricRepo = metricRepo;
             _alertEngine = alertEngine;
-            _diskDrive = new DriveInfo(diskDrive ?? throw new ArgumentNullException(nameof(diskDrive))).Name;
-            GetDiskUsagePercent(_diskDrive);
-            _cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
+            _sampler = new LocalMetricSampler(diskDrive);
+        }
+
+        public MetricCollectorService(string diskDrive, Func<MetricSnapshot, Task> remoteSink, Action<Exception> onError)
+        {
+            _sampler = new LocalMetricSampler(diskDrive);
+            _remoteSink = remoteSink ?? throw new ArgumentNullException(nameof(remoteSink));
+            _onError = onError;
         }
 
         public void Start(string serverId, string serverName, TimeSpan interval)
         {
-            _timer = new System.Threading.Timer(async _ =>
+            if (interval <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(interval));
+            if (Interlocked.Exchange(ref _started, 1) != 0)
+                throw new InvalidOperationException("Metric collector đã được khởi động.");
+
+            _stop = new CancellationTokenSource();
+            if (_remoteSink != null)
+            {
+                _outbox = new AgentMetricOutbox(GetOutboxPath(serverId));
+                _worker = RunAgentAsync(serverId, interval, _stop.Token);
+            }
+            else
+                _worker = RunLocalAsync(serverId, serverName, interval, _stop.Token);
+        }
+
+        private async Task RunLocalAsync(string serverId, string serverName, TimeSpan interval, CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
             {
                 try { await CollectOnceAsync(serverId, serverName); }
-                catch (Exception ex) { Debug.WriteLine("[Collector] " + ex.Message); }
-            }, null, TimeSpan.Zero, interval);
+                catch (Exception ex) { ReportError(ex); }
+                try { await Task.Delay(interval, cancellationToken); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+            }
+        }
+
+        private async Task RunAgentAsync(string serverId, TimeSpan interval, CancellationToken cancellationToken)
+        {
+            var sampleTask = SampleAgentAsync(serverId, interval, cancellationToken);
+            var sendTask = DrainAgentQueueAsync(cancellationToken);
+            await Task.WhenAll(sampleTask, sendTask);
+        }
+
+        private async Task SampleAgentAsync(string serverId, TimeSpan interval, CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try { _outbox.Enqueue(_sampler.Sample(serverId)); }
+                catch (Exception ex) { ReportError(ex); }
+                try { await Task.Delay(interval, cancellationToken); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+            }
+        }
+
+        private async Task DrainAgentQueueAsync(CancellationToken cancellationToken)
+        {
+            var backoff = TimeSpan.FromSeconds(1);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                MetricSnapshot snapshot;
+                if (!_outbox.TryPeek(out snapshot))
+                {
+                    try { await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken); }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+                    continue;
+                }
+
+                try
+                {
+                    await _remoteSink(snapshot);
+                    _outbox.RemoveHead();
+                    backoff = TimeSpan.FromSeconds(1);
+                }
+                catch (Exception ex)
+                {
+                    ReportError(ex);
+                    try { await Task.Delay(backoff, cancellationToken); }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+                    backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 30));
+                }
+            }
+        }
+
+        private void ReportError(Exception ex)
+        {
+            if (_onError != null) _onError(ex);
+            else Debug.WriteLine("[Collector] " + ex.Message);
+        }
+
+        private static string GetOutboxPath(string serverId)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                var key = Convert.ToBase64String(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(serverId ?? "")))
+                    .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+                return System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ServerPulse", "queue", key + ".json");
+            }
         }
 
         private async Task CollectOnceAsync(string serverId, string serverName)
         {
-            var (inKbps, outKbps) = GetNetworkKbps();
-            var snapshot = new MetricSnapshot
+            var snapshot = _sampler.Sample(serverId);
+            if (_remoteSink != null)
             {
-                ServerId = serverId,
-                CpuUsagePercent = Math.Round(_cpuCounter.NextValue(), 1),
-                RamUsagePercent = Math.Round(GetRamUsagePercent(), 1),
-                DiskUsagePercent = Math.Round(GetDiskUsagePercent(_diskDrive), 1),
-                NetworkInKbps = Math.Round(inKbps, 1),
-                NetworkOutKbps = Math.Round(outKbps, 1),
-            };
+                await _remoteSink(snapshot);
+                return;
+            }
 
             // 1) Cache real-time
             if (_cache != null)
@@ -75,57 +156,12 @@ namespace Nhom3_NoSQL.Backend.Services
             await _alertEngine.EvaluateAsync(snapshot, serverName);
         }
 
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MEMORYSTATUSEX
+        public void Dispose()
         {
-            public uint dwLength, dwMemoryLoad;
-            public ulong ullTotalPhys, ullAvailPhys, ullTotalPageFile, ullAvailPageFile, ullTotalVirtual, ullAvailVirtual, ullAvailExtendedVirtual;
+            _stop?.Cancel();
+            if (_worker != null) _worker.Wait(TimeSpan.FromSeconds(5));
+            _sampler.Dispose();
+            _stop?.Dispose();
         }
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
-
-        public static double GetRamUsagePercent()
-        {
-            var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX)) };
-            if (!GlobalMemoryStatusEx(ref m) || m.ullTotalPhys == 0) return 0;
-            return (double)(m.ullTotalPhys - m.ullAvailPhys) / m.ullTotalPhys * 100;
-        }
-
-        public static double GetDiskUsagePercent(string driveName)
-        {
-            if (string.IsNullOrWhiteSpace(driveName))
-                throw new ArgumentException("Cần cấu hình ổ đĩa để thu thập dung lượng.", nameof(driveName));
-
-            var drive = new DriveInfo(driveName);
-            if (!drive.IsReady)
-                throw new InvalidOperationException($"Ổ đĩa '{drive.Name}' không sẵn sàng.");
-            if (drive.TotalSize <= 0)
-                throw new InvalidOperationException($"Không đọc được dung lượng ổ đĩa '{drive.Name}'.");
-            var used = drive.TotalSize - drive.AvailableFreeSpace;
-            return (double)used / drive.TotalSize * 100;
-        }
-
-        //Tổng lưu lượng các card mạng đang hoạt động, quy đổi ra Kbps theo khoảng thời gian giữa 2 lần đo
-        private (double inKbps, double outKbps) GetNetworkKbps()
-        {
-            long rx = 0, tx = 0;
-            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces()
-                         .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback))
-            {
-                var s = nic.GetIPv4Statistics();
-                rx += s.BytesReceived;
-                tx += s.BytesSent;
-            }
-            var now = DateTime.UtcNow;
-            double seconds = (now - _lastNetAt).TotalSeconds;
-            var result = _lastNetAt == default || seconds <= 0
-                ? (0d, 0d)
-                : ((rx - _lastRx) * 8 / 1000d / seconds, (tx - _lastTx) * 8 / 1000d / seconds);
-            _lastRx = rx; _lastTx = tx; _lastNetAt = now;
-            return result;
-        }
-
-        public void Dispose() => _timer?.Dispose();
     }
 }

@@ -108,7 +108,7 @@ Chỉ chạy test trên môi trường phát triển với database riêng; khô
 
 - Tài khoản và dữ liệu ở chế độ `Demo` chỉ dành cho thử nghiệm; không dùng thông tin mặc định trong môi trường thật.
 - Với database `Real` mới, cần cấu hình tài khoản Admin khởi tạo bằng các biến môi trường được mô tả trong tài liệu hướng dẫn. Không lưu mật khẩu hoặc chuỗi kết nối có thông tin xác thực vào source control.
-- API hiện chỉ bind vào `localhost`; endpoint nhận metric chưa có xác thực Agent và kết nối đang dùng HTTP. Không mở cổng hoặc triển khai Agent qua mạng trước khi bổ sung xác thực và HTTPS.
+- Mặc định API chỉ bind vào `localhost`. Khi cho máy khác kết nối, chỉ dùng HTTPS, cấp token Agent riêng cho từng host và giới hạn Windows Firewall trong LAN/VPN riêng. Không mở MongoDB ra mạng hoặc chuyển tiếp cổng API ra Internet.
 
 ## Tài liệu
 

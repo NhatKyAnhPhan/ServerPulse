@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Windows.Forms.DataVisualization.Charting;
@@ -42,6 +43,69 @@ namespace Nhom3_NoSQL.Frontend.Pages
                     if (dlg.ShowDialog(Main) == DialogResult.OK) { Toast("Đã cập nhật máy chủ"); await RefreshAsync(); }
             };
             yield return edit;
+            var agent = new RoundButton("Cấp mã Agent", RoundButton.Kind.Normal);
+            agent.Click += async (s, e) =>
+            {
+                if (_view == null) return;
+                if (MessageBox.Show(Main,
+                    "Nếu host đã có mã Agent, cấp mã mới sẽ thu hồi mã đang dùng và Agent có thể mất kết nối cho đến khi được cập nhật mã mới. Bạn có muốn tiếp tục?",
+                    "Xác nhận cấp lại mã Agent", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+
+                await Try(async () =>
+                {
+                    var credential = await Api.IssueAgentTokenAsync(_view.Host.Id);
+                    ShowAgentToken(credential.Token);
+                }, "Đã cấp mã Agent mới");
+            };
+            yield return agent;
+        }
+
+        void ShowAgentToken(string token)
+        {
+            using (var dialog = new Form
+            {
+                Text = "Mã Agent của " + _view.Host.Name,
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new Size(560, 170),
+                Font = Theme.Sans(9.5f)
+            })
+            {
+                var instructions = Theme.Label(
+                    "Mã chỉ hiển thị lần này. Hãy lưu an toàn và đặt SERVERPULSE_AGENT_TOKEN trên máy cần giám sát:",
+                    Theme.Sans(9.5f), Theme.Text);
+                instructions.Location = new Point(16, 14);
+                instructions.Size = new Size(528, 42);
+                var tokenBox = new TextBox
+                {
+                    Location = new Point(16, 62),
+                    Size = new Size(528, 26),
+                    ReadOnly = true,
+                    Text = token,
+                    Font = Theme.Mono(9.5f)
+                };
+                var copy = new Button { Text = "Sao chép", Location = new Point(350, 116), Size = new Size(92, 32) };
+                var close = new Button { Text = "Đóng", Location = new Point(452, 116), Size = new Size(92, 32), DialogResult = DialogResult.OK };
+                copy.Click += (s, e) =>
+                {
+                    try
+                    {
+                        Clipboard.SetText(token);
+                        Toast("Đã sao chép mã Agent");
+                    }
+                    catch (ExternalException)
+                    {
+                        MessageBox.Show(dialog, "Không thể truy cập clipboard. Hãy chọn và sao chép mã thủ công.",
+                            "Không sao chép được", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                };
+                dialog.Controls.AddRange(new Control[] { instructions, tokenBox, copy, close });
+                dialog.AcceptButton = close;
+                dialog.ShowDialog(Main);
+            }
         }
 
         public override void Build()
@@ -62,7 +126,7 @@ namespace Nhom3_NoSQL.Frontend.Pages
             _desc = Theme.Label("", Theme.Sans(9.5f), Theme.Muted); _desc.Location = new Point(82, 48);
             head.Controls.AddRange(new Control[] { icon, _name, _pill, _desc });
             var kv = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Theme.Card, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            _ip = KV(kv, "IP ADDRESS"); _os = KV(kv, "HỆ ĐIỀU HÀNH"); _hostId = KV(kv, "HOST ID"); _seen = KV(kv, "LAST SEEN"); _heartbeat = KV(kv, "HEARTBEAT");
+            _ip = KV(kv, "IP ADDRESS"); _os = KV(kv, "HỆ ĐIỀU HÀNH"); _hostId = KV(kv, "HOST ID"); _seen = KV(kv, "LAST SEEN");             _heartbeat = KV(kv, "AGENT");
             _hostId.Font = Theme.Mono(8.5f);
             head.Controls.Add(kv);
             head.Layout += (s, e) => { kv.Location = new Point(head.Width - kv.Width - 16, 20); _pill.Left = _name.Right + 10; };
@@ -143,8 +207,8 @@ namespace Nhom3_NoSQL.Frontend.Pages
             _os.Text = h.OperatingSystem;
             _hostId.Text = h.Id;
             _seen.Text = Theme.Ago(v.LastSeen);
-            _heartbeat.Text = v.Status == "OFFLINE" ? "LOST" : "OK";
-            _heartbeat.ForeColor = v.Status == "OFFLINE" ? Theme.Red : Theme.Green;
+            _heartbeat.Text = live ? "CONNECTED" : "DISCONNECTED";
+            _heartbeat.ForeColor = live ? Theme.Green : Theme.Red;
             PerformLayout();
 
             var pts = hist.Points;
